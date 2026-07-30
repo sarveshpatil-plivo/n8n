@@ -1,38 +1,44 @@
 import { createHmac } from 'crypto';
 
-import { mock } from 'jest-mock-extended';
-import type { IWebhookFunctions, INodeType } from 'n8n-workflow';
+import { mock } from 'vitest-mock-extended';
+import type { Mock } from 'vitest';
+import type { IDataObject, IHookFunctions, INodeType, IWebhookFunctions } from 'n8n-workflow';
 
+import { plivoApiRequest } from './GenericFunctions';
 import { PlivoTrigger } from './PlivoTrigger.node';
 import { detectEventType, verifyPlivoSignature } from './PlivoTriggerHelpers';
 
 // Mock the helper functions
-jest.mock('./PlivoTriggerHelpers', () => ({
-	verifyPlivoSignature: jest.fn(),
-	detectEventType: jest.fn(),
+vi.mock('./PlivoTriggerHelpers', () => ({
+	verifyPlivoSignature: vi.fn(),
+	detectEventType: vi.fn(),
+}));
+
+vi.mock('./GenericFunctions', () => ({
+	plivoApiRequest: vi.fn(),
 }));
 
 describe('PlivoTrigger Node', () => {
 	let plivoTrigger: INodeType;
 	let mockWebhookFunctions: ReturnType<typeof mock<IWebhookFunctions>>;
 	let mockResponse: {
-		status: jest.Mock;
-		send: jest.Mock;
-		json: jest.Mock;
-		end: jest.Mock;
+		status: Mock;
+		send: Mock;
+		json: Mock;
+		end: Mock;
 	};
 
 	beforeEach(() => {
-		jest.clearAllMocks();
+		vi.clearAllMocks();
 		plivoTrigger = new PlivoTrigger();
 
 		mockWebhookFunctions = mock<IWebhookFunctions>();
 
 		mockResponse = {
-			status: jest.fn().mockReturnThis(),
-			send: jest.fn().mockReturnThis(),
-			json: jest.fn().mockReturnThis(),
-			end: jest.fn(),
+			status: vi.fn().mockReturnThis(),
+			send: vi.fn().mockReturnThis(),
+			json: vi.fn().mockReturnThis(),
+			end: vi.fn(),
 		};
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -40,17 +46,17 @@ describe('PlivoTrigger Node', () => {
 
 		// Mock helpers.returnJsonArray
 		mockWebhookFunctions.helpers = {
-			returnJsonArray: jest.fn((data) => [{ json: data }]),
+			returnJsonArray: vi.fn((data) => [{ json: data }]),
 		} as unknown as IWebhookFunctions['helpers'];
 
 		// Default: signature validation enabled and valid
-		(verifyPlivoSignature as jest.Mock).mockResolvedValue(true);
+		(verifyPlivoSignature as Mock).mockResolvedValue(true);
 	});
 
 	describe('webhook method - signature validation', () => {
 		it('should reject request with invalid signature when validation is enabled', async () => {
-			(verifyPlivoSignature as jest.Mock).mockResolvedValue(false);
-			(detectEventType as jest.Mock).mockReturnValue('incomingSms');
+			(verifyPlivoSignature as Mock).mockResolvedValue(false);
+			(detectEventType as Mock).mockReturnValue('incomingSms');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -71,8 +77,8 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should accept request with valid signature when validation is enabled', async () => {
-			(verifyPlivoSignature as jest.Mock).mockResolvedValue(true);
-			(detectEventType as jest.Mock).mockReturnValue('incomingSms');
+			(verifyPlivoSignature as Mock).mockResolvedValue(true);
+			(detectEventType as Mock).mockReturnValue('incomingSms');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -98,7 +104,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should skip signature validation when disabled', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('incomingSms');
+			(detectEventType as Mock).mockReturnValue('incomingSms');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return false;
@@ -121,11 +127,11 @@ describe('PlivoTrigger Node', () => {
 
 	describe('webhook method - event filtering', () => {
 		beforeEach(() => {
-			(verifyPlivoSignature as jest.Mock).mockResolvedValue(true);
+			(verifyPlivoSignature as Mock).mockResolvedValue(true);
 		});
 
 		it('should process incoming SMS when subscribed', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('incomingSms');
+			(detectEventType as Mock).mockReturnValue('incomingSms');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -152,7 +158,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should ignore events not subscribed to', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('smsStatus');
+			(detectEventType as Mock).mockReturnValue('smsStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -172,7 +178,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should process SMS delivery status when subscribed', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('smsStatus');
+			(detectEventType as Mock).mockReturnValue('smsStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -198,7 +204,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should process incoming call when subscribed', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('incomingCall');
+			(detectEventType as Mock).mockReturnValue('incomingCall');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -225,7 +231,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should process call status update when subscribed', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('callStatus');
+			(detectEventType as Mock).mockReturnValue('callStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -253,7 +259,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should handle multiple event subscriptions', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('smsStatus');
+			(detectEventType as Mock).mockReturnValue('smsStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -273,7 +279,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should ignore unknown event types', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('unknown');
+			(detectEventType as Mock).mockReturnValue('unknown');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -293,11 +299,11 @@ describe('PlivoTrigger Node', () => {
 
 	describe('webhook method - real-world payloads', () => {
 		beforeEach(() => {
-			(verifyPlivoSignature as jest.Mock).mockResolvedValue(true);
+			(verifyPlivoSignature as Mock).mockResolvedValue(true);
 		});
 
 		it('should handle complete Plivo incoming SMS payload', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('incomingSms');
+			(detectEventType as Mock).mockReturnValue('incomingSms');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -330,7 +336,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should handle complete Plivo SMS delivery status payload', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('smsStatus');
+			(detectEventType as Mock).mockReturnValue('smsStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -360,7 +366,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should handle complete Plivo incoming call payload', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('incomingCall');
+			(detectEventType as Mock).mockReturnValue('incomingCall');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -385,7 +391,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should handle complete Plivo call status update payload', async () => {
-			(detectEventType as jest.Mock).mockReturnValue('callStatus');
+			(detectEventType as Mock).mockReturnValue('callStatus');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -420,7 +426,11 @@ describe('PlivoTrigger Node', () => {
 describe('PlivoTriggerHelpers - detectEventType', () => {
 	// These tests verify the actual detectEventType function logic
 	// We need to reimport without mocks for unit testing the helper
-	const { detectEventType: realDetectEventType } = jest.requireActual('./PlivoTriggerHelpers');
+	let realDetectEventType: typeof detectEventType;
+	beforeAll(async () => {
+		({ detectEventType: realDetectEventType } =
+			await vi.importActual<typeof import('./PlivoTriggerHelpers')>('./PlivoTriggerHelpers'));
+	});
 
 	it('should detect incoming SMS', () => {
 		const payload = {
@@ -512,8 +522,11 @@ describe('PlivoTriggerHelpers - detectEventType', () => {
 
 describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 	// Import actual implementation for signature verification tests
-	const { verifyPlivoSignature: realVerifyPlivoSignature } =
-		jest.requireActual('./PlivoTriggerHelpers');
+	let realVerifyPlivoSignature: typeof verifyPlivoSignature;
+	beforeAll(async () => {
+		({ verifyPlivoSignature: realVerifyPlivoSignature } =
+			await vi.importActual<typeof import('./PlivoTriggerHelpers')>('./PlivoTriggerHelpers'));
+	});
 
 	// Helper to compute expected signature
 	function computeExpectedSignature(
@@ -549,11 +562,11 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		} = options;
 
 		return {
-			getCredentials: jest.fn().mockResolvedValue({
+			getCredentials: vi.fn().mockResolvedValue({
 				authId: 'test-auth-id',
 				authToken,
 			}),
-			getRequestObject: jest.fn().mockReturnValue({
+			getRequestObject: vi.fn().mockReturnValue({
 				headers: {
 					'x-plivo-signature-v3': signature,
 					'x-plivo-signature-v3-nonce': nonce,
@@ -561,7 +574,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 				method,
 				rawBody,
 			}),
-			getNodeWebhookUrl: jest.fn().mockReturnValue(webhookUrl),
+			getNodeWebhookUrl: vi.fn().mockReturnValue(webhookUrl),
 		};
 	}
 
@@ -736,5 +749,153 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const signature = computeExpectedSignature(authToken, webhookUrl, nonce);
 		// Verify it's valid base64 by decoding and re-encoding
 		expect(Buffer.from(signature, 'base64').toString('base64')).toBe(signature);
+	});
+});
+
+describe('PlivoTrigger Node - webhookMethods', () => {
+	const WEBHOOK = 'https://n8n.example.com/webhook/abc';
+	let plivoTrigger: PlivoTrigger;
+	let mockHookFunctions: ReturnType<typeof mock<IHookFunctions>>;
+	let staticData: IDataObject;
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		plivoTrigger = new PlivoTrigger();
+		mockHookFunctions = mock<IHookFunctions>();
+		staticData = {};
+		mockHookFunctions.getWorkflowStaticData.mockReturnValue(staticData);
+		mockHookFunctions.getNodeWebhookUrl.mockReturnValue(WEBHOOK);
+	});
+
+	function setParams(events: string[], phoneNumbers: string[] = []) {
+		mockHookFunctions.getNodeParameter.mockImplementation((name: string) => {
+			if (name === 'events') return events;
+			if (name === 'phoneNumbers') return phoneNumbers;
+			return undefined;
+		});
+	}
+
+	describe('checkExists', () => {
+		it('returns false when nothing is registered', async () => {
+			const result = await plivoTrigger.webhookMethods.default.checkExists.call(mockHookFunctions);
+			expect(result).toBe(false);
+		});
+
+		it('returns true when managed apps are stored', async () => {
+			staticData.managedApps = { '+14155550123': 'APP-1' };
+			const result = await plivoTrigger.webhookMethods.default.checkExists.call(mockHookFunctions);
+			expect(result).toBe(true);
+		});
+	});
+
+	describe('create', () => {
+		it('does nothing when only SMS delivery status is selected', async () => {
+			setParams(['smsStatus'], ['+14155550123']);
+
+			const result = await plivoTrigger.webhookMethods.default.create.call(mockHookFunctions);
+
+			expect(result).toBe(true);
+			expect(plivoApiRequest).not.toHaveBeenCalled();
+			expect(staticData.managedApps).toBeUndefined();
+		});
+
+		it('creates a per-number app, links the number, and sets the message URL for incoming SMS', async () => {
+			setParams(['incomingSms'], ['+14155550123']);
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Number/14155550123') return { application: '' };
+					if (method === 'POST' && endpoint === '/Application') return { app_id: 'APP-NEW' };
+					return {};
+				},
+			);
+
+			await plivoTrigger.webhookMethods.default.create.call(mockHookFunctions);
+
+			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Application', {
+				app_name: 'n8n-plivo-trigger-14155550123',
+			});
+			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Number/14155550123', {
+				app_id: 'APP-NEW',
+			});
+			expect(plivoApiRequest).toHaveBeenCalledWith(
+				'POST',
+				'/Application/APP-NEW',
+				expect.objectContaining({ message_url: WEBHOOK, message_method: 'POST' }),
+			);
+			expect((staticData.managedApps as IDataObject)['+14155550123']).toBe('APP-NEW');
+		});
+
+		it('reuses the number existing n8n app and adds the answer URL so voice and SMS coexist', async () => {
+			setParams(['incomingCall'], ['+14155550123']);
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Number/14155550123') {
+						return { application: '/v1/Account/X/Application/APP-EXIST/' };
+					}
+					if (method === 'GET' && endpoint === '/Application/APP-EXIST') {
+						return { app_name: 'n8n-plivo-trigger-14155550123', message_url: WEBHOOK };
+					}
+					return {};
+				},
+			);
+
+			await plivoTrigger.webhookMethods.default.create.call(mockHookFunctions);
+
+			expect(plivoApiRequest).not.toHaveBeenCalledWith('POST', '/Application', expect.anything());
+			expect(plivoApiRequest).toHaveBeenCalledWith(
+				'POST',
+				'/Application/APP-EXIST',
+				expect.objectContaining({ answer_url: WEBHOOK, answer_method: 'POST' }),
+			);
+			expect((staticData.managedApps as IDataObject)['+14155550123']).toBe('APP-EXIST');
+		});
+	});
+
+	describe('delete', () => {
+		it('clears the URL, deletes the app when nothing remains, and restores the previous app', async () => {
+			staticData.managedApps = { '+14155550123': 'APP-1' };
+			staticData.previousApps = { '+14155550123': 'APP-OLD' };
+			staticData.events = ['incomingSms'];
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Application/APP-1') {
+						return { message_url: '', answer_url: '' };
+					}
+					return {};
+				},
+			);
+
+			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
+
+			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Application/APP-1', {
+				message_url: '',
+			});
+			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Number/14155550123', {
+				app_id: 'APP-OLD',
+			});
+			expect(plivoApiRequest).toHaveBeenCalledWith('DELETE', '/Application/APP-1');
+			expect(staticData.managedApps).toBeUndefined();
+		});
+
+		it('keeps the app when the other function is still configured', async () => {
+			staticData.managedApps = { '+14155550123': 'APP-1' };
+			staticData.previousApps = {};
+			staticData.events = ['incomingCall'];
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Application/APP-1') {
+						return { message_url: 'https://kept', answer_url: '' };
+					}
+					return {};
+				},
+			);
+
+			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
+
+			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Application/APP-1', {
+				answer_url: '',
+			});
+			expect(plivoApiRequest).not.toHaveBeenCalledWith('DELETE', expect.anything());
+		});
 	});
 });
