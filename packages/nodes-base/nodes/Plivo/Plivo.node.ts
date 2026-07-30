@@ -16,7 +16,7 @@ export class Plivo implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Plivo',
 		name: 'plivo',
-		icon: 'file:plivo.svg',
+		icon: { light: 'file:plivo.svg', dark: 'file:plivo.dark.svg' },
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',

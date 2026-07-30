@@ -15,7 +15,7 @@ export class PlivoTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Plivo Trigger',
 		name: 'plivoTrigger',
-		icon: 'file:plivo.svg',
+		icon: { light: 'file:plivo.svg', dark: 'file:plivo.dark.svg' },
 		group: ['trigger'],
 		version: 1,
 		subtitle: '={{$parameter["events"].join(", ")}}',
