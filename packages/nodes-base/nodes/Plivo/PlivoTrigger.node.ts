@@ -35,7 +35,8 @@ export class PlivoTrigger implements INodeType {
 			{
 				name: 'default',
 				httpMethod: 'POST',
-				responseMode: '={{$parameter["responseMode"]}}',
+				responseMode:
+					'={{$parameter["responseMode"] === "responseNode" ? "responseNode" : "onReceived"}}',
 				path: 'webhook',
 			},
 		],
@@ -90,9 +91,15 @@ export class PlivoTrigger implements INodeType {
 				},
 				options: [
 					{
-						name: 'Immediately',
+						name: 'Redirect to Answer URL',
+						value: 'redirect',
+						description:
+							'Hand the call to your own answer URL. n8n redirects Plivo to fetch call-control XML from it while still triggering the workflow.',
+					},
+					{
+						name: 'Answer XML',
 						value: 'onReceived',
-						description: 'Answer the call with the Answer XML configured below',
+						description: 'Answer the call with the Plivo XML configured below',
 					},
 					{
 						name: "Using 'Respond to Webhook' Node",
@@ -102,7 +109,40 @@ export class PlivoTrigger implements INodeType {
 					},
 				],
 				default: 'onReceived',
-				description: 'How to return call-control XML to Plivo when an incoming call is answered',
+				description: 'How to control the call once it reaches Plivo',
+			},
+			{
+				displayName: 'Answer URL',
+				name: 'answerUrl',
+				type: 'string',
+				required: true,
+				displayOptions: {
+					show: {
+						events: ['incomingCall'],
+						responseMode: ['redirect'],
+					},
+				},
+				default: '',
+				placeholder: 'https://example.com/answer',
+				description:
+					'URL that returns Plivo call-control XML. Plivo is redirected here to control the call, the same as the Make a Call action node.',
+			},
+			{
+				displayName: 'Answer Method',
+				name: 'answerMethod',
+				type: 'options',
+				options: [
+					{ name: 'POST', value: 'POST' },
+					{ name: 'GET', value: 'GET' },
+				],
+				default: 'POST',
+				displayOptions: {
+					show: {
+						events: ['incomingCall'],
+						responseMode: ['redirect'],
+					},
+				},
+				description: 'HTTP method Plivo uses to fetch the Answer URL',
 			},
 			{
 				displayName: 'Answer XML',
@@ -324,10 +364,22 @@ export class PlivoTrigger implements INodeType {
 				};
 			}
 
-			const answerXml = this.getNodeParameter(
-				'answerXml',
-				'<Response><Speak>Your call has been received.</Speak></Response>',
-			) as string;
+			let answerXml: string;
+			if (responseMode === 'redirect') {
+				const answerUrl = this.getNodeParameter('answerUrl', '') as string;
+				const answerMethod = this.getNodeParameter('answerMethod', 'POST') as string;
+				const escapedUrl = answerUrl
+					.replace(/&/g, '&amp;')
+					.replace(/</g, '&lt;')
+					.replace(/>/g, '&gt;');
+				answerXml = `<Response><Redirect method="${answerMethod}">${escapedUrl}</Redirect></Response>`;
+			} else {
+				answerXml = this.getNodeParameter(
+					'answerXml',
+					'<Response><Speak>Your call has been received.</Speak></Response>',
+				) as string;
+			}
+
 			const res = this.getResponseObject();
 			res.setHeader('Content-Type', 'text/xml');
 			res.status(200).send(answerXml);

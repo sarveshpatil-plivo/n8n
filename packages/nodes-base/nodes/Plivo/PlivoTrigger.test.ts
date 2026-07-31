@@ -242,6 +242,31 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
+		it('redirects Plivo to the configured Answer URL (responseMode redirect)', async () => {
+			(detectEventType as Mock).mockReturnValue('incomingCall');
+
+			mockWebhookFunctions.getNodeParameter.mockImplementation(
+				(paramName: string, fallback?: unknown) => {
+					if (paramName === 'validateSignature') return true;
+					if (paramName === 'events') return ['incomingCall'];
+					if (paramName === 'responseMode') return 'redirect';
+					if (paramName === 'answerUrl') return 'https://example.com/answer';
+					if (paramName === 'answerMethod') return 'GET';
+					return fallback;
+				},
+			);
+			mockWebhookFunctions.getBodyData.mockReturnValue({ CallUUID: 'call-123' });
+
+			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
+
+			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
+			expect(mockResponse.send).toHaveBeenCalledWith(
+				'<Response><Redirect method="GET">https://example.com/answer</Redirect></Response>',
+			);
+			expect(result.noWebhookResponse).toBe(true);
+			expect(result.workflowData).toBeDefined();
+		});
+
 		it('defers the response to the workflow when responseMode is responseNode', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
