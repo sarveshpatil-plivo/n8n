@@ -205,14 +205,16 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('should process incoming call when subscribed and answer with Speak XML', async () => {
+		it('answers an incoming call with the configured Answer XML (responseMode onReceived)', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
+			const ANSWER_XML = '<Response><Play>https://example.com/greeting.mp3</Play></Response>';
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation(
 				(paramName: string, fallback?: unknown) => {
 					if (paramName === 'validateSignature') return true;
 					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'answerMessage') return 'Your call has been received.';
+					if (paramName === 'responseMode') return 'onReceived';
+					if (paramName === 'answerXml') return ANSWER_XML;
 					return fallback;
 				},
 			);
@@ -228,18 +230,37 @@ describe('PlivoTrigger Node', () => {
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
-			// Answers the call with call-control XML while still triggering the workflow.
+			// Answers the call with the configured call-control XML while triggering the workflow.
 			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
 			expect(mockResponse.status).toHaveBeenCalledWith(200);
-			expect(mockResponse.send).toHaveBeenCalledWith(
-				'<Response><Speak>Your call has been received.</Speak></Response>',
-			);
+			expect(mockResponse.send).toHaveBeenCalledWith(ANSWER_XML);
 			expect(result.noWebhookResponse).toBe(true);
 			expect(result.workflowData).toBeDefined();
 			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
 				...bodyData,
 				_eventType: 'incomingCall',
 			});
+		});
+
+		it('defers the response to the workflow when responseMode is responseNode', async () => {
+			(detectEventType as Mock).mockReturnValue('incomingCall');
+
+			mockWebhookFunctions.getNodeParameter.mockImplementation(
+				(paramName: string, fallback?: unknown) => {
+					if (paramName === 'validateSignature') return true;
+					if (paramName === 'events') return ['incomingCall'];
+					if (paramName === 'responseMode') return 'responseNode';
+					return fallback;
+				},
+			);
+			mockWebhookFunctions.getBodyData.mockReturnValue({ CallUUID: 'call-123' });
+
+			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
+
+			// The node does not answer the call itself; a Respond to Webhook node will.
+			expect(mockResponse.send).not.toHaveBeenCalled();
+			expect(result.noWebhookResponse).toBeUndefined();
+			expect(result.workflowData).toBeDefined();
 		});
 
 		it('should process call status update when subscribed', async () => {
@@ -384,7 +405,8 @@ describe('PlivoTrigger Node', () => {
 				(paramName: string, fallback?: unknown) => {
 					if (paramName === 'validateSignature') return true;
 					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'answerMessage') return 'Your call has been received.';
+					if (paramName === 'responseMode') return 'onReceived';
+					if (paramName === 'answerXml') return '<Response></Response>';
 					return fallback;
 				},
 			);

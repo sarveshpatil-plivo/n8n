@@ -35,7 +35,7 @@ export class PlivoTrigger implements INodeType {
 			{
 				name: 'default',
 				httpMethod: 'POST',
-				responseMode: 'onReceived',
+				responseMode: '={{$parameter["responseMode"]}}',
 				path: 'webhook',
 			},
 		],
@@ -80,17 +80,46 @@ export class PlivoTrigger implements INodeType {
 					'The Plivo number(s) in E.164 to receive events on, each pointed at this webhook while the workflow is active and restored when it is deactivated',
 			},
 			{
-				displayName: 'Call Answer Message',
-				name: 'answerMessage',
-				type: 'string',
-				default: 'Your call has been received.',
+				displayName: 'Respond',
+				name: 'responseMode',
+				type: 'options',
 				displayOptions: {
 					show: {
 						events: ['incomingCall'],
 					},
 				},
+				options: [
+					{
+						name: 'Immediately',
+						value: 'onReceived',
+						description: 'Answer the call with the Answer XML configured below',
+					},
+					{
+						name: "Using 'Respond to Webhook' Node",
+						value: 'responseNode',
+						description:
+							'Build the call-control XML in the workflow and return it from a Respond to Webhook node (set its Content-Type to text/xml)',
+					},
+				],
+				default: 'onReceived',
+				description: 'How to return call-control XML to Plivo when an incoming call is answered',
+			},
+			{
+				displayName: 'Answer XML',
+				name: 'answerXml',
+				type: 'string',
+				typeOptions: {
+					rows: 3,
+				},
+				displayOptions: {
+					show: {
+						events: ['incomingCall'],
+						responseMode: ['onReceived'],
+					},
+				},
+				default: '<Response><Speak>Your call has been received.</Speak></Response>',
 				description:
-					'Spoken to the caller when an incoming call is answered. Plivo requires a spoken or played response to answer the call, so leaving this empty will hang up without answering.',
+					'The Plivo XML returned to answer the call. Plivo requires a response with at least one element (e.g. Speak or Play) to answer the call; an empty Response hangs up without answering.',
 			},
 			{
 				displayName: 'Validate Signature',
@@ -284,23 +313,24 @@ export class PlivoTrigger implements INodeType {
 
 		// Plivo answers an inbound call by fetching call-control XML from the answer
 		// URL, so a voice event must be replied to with a <Response> document or the
-		// call fails. An empty <Response> ends the call without answering, so speak the
-		// configured message to answer it. An incoming SMS only needs a 200, which n8n
-		// returns by default.
+		// call fails. Either return the configured XML immediately, or defer to a
+		// Respond to Webhook node so the workflow can build the response. An incoming
+		// SMS only needs a 200, which n8n returns by default.
 		if (eventType === 'incomingCall') {
-			const answerMessage = this.getNodeParameter(
-				'answerMessage',
-				'Your call has been received.',
-			) as string;
-			const escaped = answerMessage
-				.replace(/&/g, '&amp;')
-				.replace(/</g, '&lt;')
-				.replace(/>/g, '&gt;');
-			const body = escaped ? `<Response><Speak>${escaped}</Speak></Response>` : '<Response></Response>';
+			const responseMode = this.getNodeParameter('responseMode', 'onReceived') as string;
+			if (responseMode === 'responseNode') {
+				return {
+					workflowData: [this.helpers.returnJsonArray(returnData)],
+				};
+			}
 
+			const answerXml = this.getNodeParameter(
+				'answerXml',
+				'<Response><Speak>Your call has been received.</Speak></Response>',
+			) as string;
 			const res = this.getResponseObject();
 			res.setHeader('Content-Type', 'text/xml');
-			res.status(200).send(body);
+			res.status(200).send(answerXml);
 			return {
 				noWebhookResponse: true,
 				workflowData: [this.helpers.returnJsonArray(returnData)],
