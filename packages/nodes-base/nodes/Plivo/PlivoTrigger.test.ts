@@ -205,16 +205,15 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('answers an incoming call with the configured Answer XML (responseMode onReceived)', async () => {
+		it('redirects Plivo to the configured Answer URL and triggers the workflow', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
-			const ANSWER_XML = '<Response><Play>https://example.com/greeting.mp3</Play></Response>';
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation(
 				(paramName: string, fallback?: unknown) => {
 					if (paramName === 'validateSignature') return true;
 					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'responseMode') return 'onReceived';
-					if (paramName === 'answerXml') return ANSWER_XML;
+					if (paramName === 'answerUrl') return 'https://example.com/answer';
+					if (paramName === 'answerMethod') return 'GET';
 					return fallback;
 				},
 			);
@@ -230,62 +229,18 @@ describe('PlivoTrigger Node', () => {
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
-			// Answers the call with the configured call-control XML while triggering the workflow.
+			// Redirects Plivo to the user's Answer URL for call control while triggering the workflow.
 			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
 			expect(mockResponse.status).toHaveBeenCalledWith(200);
-			expect(mockResponse.send).toHaveBeenCalledWith(ANSWER_XML);
+			expect(mockResponse.send).toHaveBeenCalledWith(
+				'<Response><Redirect method="GET">https://example.com/answer</Redirect></Response>',
+			);
 			expect(result.noWebhookResponse).toBe(true);
 			expect(result.workflowData).toBeDefined();
 			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
 				...bodyData,
 				_eventType: 'incomingCall',
 			});
-		});
-
-		it('redirects Plivo to the configured Answer URL (responseMode redirect)', async () => {
-			(detectEventType as Mock).mockReturnValue('incomingCall');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation(
-				(paramName: string, fallback?: unknown) => {
-					if (paramName === 'validateSignature') return true;
-					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'responseMode') return 'redirect';
-					if (paramName === 'answerUrl') return 'https://example.com/answer';
-					if (paramName === 'answerMethod') return 'GET';
-					return fallback;
-				},
-			);
-			mockWebhookFunctions.getBodyData.mockReturnValue({ CallUUID: 'call-123' });
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
-			expect(mockResponse.send).toHaveBeenCalledWith(
-				'<Response><Redirect method="GET">https://example.com/answer</Redirect></Response>',
-			);
-			expect(result.noWebhookResponse).toBe(true);
-			expect(result.workflowData).toBeDefined();
-		});
-
-		it('defers the response to the workflow when responseMode is responseNode', async () => {
-			(detectEventType as Mock).mockReturnValue('incomingCall');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation(
-				(paramName: string, fallback?: unknown) => {
-					if (paramName === 'validateSignature') return true;
-					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'responseMode') return 'responseNode';
-					return fallback;
-				},
-			);
-			mockWebhookFunctions.getBodyData.mockReturnValue({ CallUUID: 'call-123' });
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			// The node does not answer the call itself; a Respond to Webhook node will.
-			expect(mockResponse.send).not.toHaveBeenCalled();
-			expect(result.noWebhookResponse).toBeUndefined();
-			expect(result.workflowData).toBeDefined();
 		});
 
 		it('should process call status update when subscribed', async () => {
@@ -430,8 +385,8 @@ describe('PlivoTrigger Node', () => {
 				(paramName: string, fallback?: unknown) => {
 					if (paramName === 'validateSignature') return true;
 					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'responseMode') return 'onReceived';
-					if (paramName === 'answerXml') return '<Response></Response>';
+					if (paramName === 'answerUrl') return 'https://example.com/answer';
+					if (paramName === 'answerMethod') return 'POST';
 					return fallback;
 				},
 			);
