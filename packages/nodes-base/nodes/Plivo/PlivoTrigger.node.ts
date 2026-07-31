@@ -113,7 +113,12 @@ export class PlivoTrigger implements INodeType {
 	webhookMethods = {
 		default: {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
-				return this.getWorkflowStaticData('node').managedApps !== undefined;
+				// n8n registers a separate test webhook (activation mode 'manual') alongside
+				// the production one. Because a Plivo number has a single application/URL slot
+				// they share, each registration is tracked under its own static-data key so a
+				// test run never clobbers an active production binding.
+				const key = this.getActivationMode() === 'manual' ? 'testManagedApps' : 'managedApps';
+				return this.getWorkflowStaticData('node')[key] !== undefined;
 			},
 
 			async create(this: IHookFunctions): Promise<boolean> {
@@ -128,9 +133,9 @@ export class PlivoTrigger implements INodeType {
 				const webhookUrl = this.getNodeWebhookUrl('default') as string;
 				const phoneNumbers = this.getNodeParameter('phoneNumbers', []) as string[];
 				const staticData = this.getWorkflowStaticData('node');
+				const key = this.getActivationMode() === 'manual' ? 'testManagedApps' : 'managedApps';
 
-				const managedApps: IDataObject = {};
-				const previousApps: IDataObject = {};
+				const managed: IDataObject = {};
 
 				for (const number of phoneNumbers) {
 					const num = number.replace(/\D/g, '');
@@ -142,6 +147,12 @@ export class PlivoTrigger implements INodeType {
 						: '';
 
 					let appId = '';
+					let createdApp = false;
+					let previousAppId = '';
+					// URLs the application had before we repointed it, so a temporary test
+					// registration can restore an active production binding when it ends.
+					const snapshot: IDataObject = {};
+
 					if (currentAppId) {
 						// The number may reference an application that no longer exists (e.g. a
 						// stale binding left by a deleted app). Treat that as unmanaged and
@@ -151,8 +162,12 @@ export class PlivoTrigger implements INodeType {
 							.catch(() => undefined);
 						if (currentApp?.app_name === appName) {
 							appId = currentAppId;
+							snapshot.answer_url = currentApp.answer_url ?? '';
+							snapshot.answer_method = currentApp.answer_method ?? 'POST';
+							snapshot.message_url = currentApp.message_url ?? '';
+							snapshot.message_method = currentApp.message_method ?? 'POST';
 						} else if (currentApp) {
-							previousApps[number] = currentAppId;
+							previousAppId = currentAppId;
 						}
 					}
 
@@ -161,6 +176,7 @@ export class PlivoTrigger implements INodeType {
 							app_name: appName,
 						});
 						appId = created.app_id;
+						createdApp = true;
 						await plivoApiRequest.call(this, 'POST', `/Number/${num}`, { app_id: appId });
 					}
 
@@ -175,53 +191,58 @@ export class PlivoTrigger implements INodeType {
 					}
 					await plivoApiRequest.call(this, 'POST', `/Application/${appId}`, urls);
 
-					managedApps[number] = appId;
+					managed[number] = { appId, createdApp, previousAppId, snapshot };
 				}
 
-				staticData.managedApps = managedApps;
-				staticData.previousApps = previousApps;
-				staticData.events = events;
+				staticData[key] = managed;
 
 				return true;
 			},
 
 			async delete(this: IHookFunctions): Promise<boolean> {
 				const staticData = this.getWorkflowStaticData('node');
-				const managedApps = (staticData.managedApps as IDataObject) ?? {};
-				const previousApps = (staticData.previousApps as IDataObject) ?? {};
-				const events = (staticData.events as string[]) ?? [];
+				const isTest = this.getActivationMode() === 'manual';
+				const key = isTest ? 'testManagedApps' : 'managedApps';
+				const managed = (staticData[key] as IDataObject) ?? {};
 
-				const clearSms = events.includes('incomingSms');
-				const clearCall = events.includes('incomingCall');
-
-				for (const number of Object.keys(managedApps)) {
+				for (const number of Object.keys(managed)) {
 					const num = number.replace(/\D/g, '');
-					const appId = managedApps[number] as string;
+					const entry = managed[number] as {
+						appId: string;
+						createdApp: boolean;
+						previousAppId: string;
+						snapshot: IDataObject;
+					};
 
-					const cleared: IDataObject = {};
-					if (clearSms) {
-						cleared.message_url = '';
+					if (isTest) {
+						// A test registration only borrowed the number, so put the application's
+						// URLs back exactly as they were and leave everything else in place.
+						await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
+							answer_url: entry.snapshot.answer_url ?? '',
+							answer_method: entry.snapshot.answer_method ?? 'POST',
+							message_url: entry.snapshot.message_url ?? '',
+							message_method: entry.snapshot.message_method ?? 'POST',
+						});
+						continue;
 					}
-					if (clearCall) {
-						cleared.answer_url = '';
-					}
-					await plivoApiRequest.call(this, 'POST', `/Application/${appId}`, cleared);
 
-					const app = await plivoApiRequest.call(this, 'GET', `/Application/${appId}`);
-					if (!app.message_url && !app.answer_url) {
-						const previousAppId = previousApps[number] as string;
-						if (previousAppId) {
+					// Production teardown: clear our URLs, and if we created the application,
+					// reattach any prior application to the number and delete ours.
+					await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
+						answer_url: '',
+						message_url: '',
+					});
+					if (entry.createdApp) {
+						if (entry.previousAppId) {
 							await plivoApiRequest.call(this, 'POST', `/Number/${num}`, {
-								app_id: previousAppId,
+								app_id: entry.previousAppId,
 							});
 						}
-						await plivoApiRequest.call(this, 'DELETE', `/Application/${appId}`);
+						await plivoApiRequest.call(this, 'DELETE', `/Application/${entry.appId}`);
 					}
 				}
 
-				delete staticData.managedApps;
-				delete staticData.previousApps;
-				delete staticData.events;
+				delete staticData[key];
 
 				return true;
 			},

@@ -809,6 +809,8 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 		staticData = {};
 		mockHookFunctions.getWorkflowStaticData.mockReturnValue(staticData);
 		mockHookFunctions.getNodeWebhookUrl.mockReturnValue(WEBHOOK);
+		// Default to a production activation; individual tests override to 'manual'.
+		mockHookFunctions.getActivationMode.mockReturnValue('activate');
 	});
 
 	function setParams(events: string[], phoneNumbers: string[] = []) {
@@ -826,9 +828,17 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 		});
 
 		it('returns true when managed apps are stored', async () => {
-			staticData.managedApps = { '+14155550123': 'APP-1' };
+			staticData.managedApps = { '+14155550123': { appId: 'APP-1' } };
 			const result = await plivoTrigger.webhookMethods.default.checkExists.call(mockHookFunctions);
 			expect(result).toBe(true);
+		});
+
+		it('tracks test registrations under a separate key', async () => {
+			// A production registration must not make a test registration look present.
+			staticData.managedApps = { '+14155550123': { appId: 'APP-1' } };
+			mockHookFunctions.getActivationMode.mockReturnValue('manual');
+			const result = await plivoTrigger.webhookMethods.default.checkExists.call(mockHookFunctions);
+			expect(result).toBe(false);
 		});
 	});
 
@@ -866,7 +876,9 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 				'/Application/APP-NEW',
 				expect.objectContaining({ message_url: WEBHOOK, message_method: 'POST' }),
 			);
-			expect((staticData.managedApps as IDataObject)['+14155550123']).toBe('APP-NEW');
+			expect(
+				((staticData.managedApps as IDataObject)['+14155550123'] as IDataObject).appId,
+			).toBe('APP-NEW');
 		});
 
 		it('reuses the number existing n8n app and adds the answer URL so voice and SMS coexist', async () => {
@@ -891,27 +903,22 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 				'/Application/APP-EXIST',
 				expect.objectContaining({ answer_url: WEBHOOK, answer_method: 'POST' }),
 			);
-			expect((staticData.managedApps as IDataObject)['+14155550123']).toBe('APP-EXIST');
+			expect(
+				((staticData.managedApps as IDataObject)['+14155550123'] as IDataObject).appId,
+			).toBe('APP-EXIST');
 		});
 	});
 
 	describe('delete', () => {
-		it('clears the URL, deletes the app when nothing remains, and restores the previous app', async () => {
-			staticData.managedApps = { '+14155550123': 'APP-1' };
-			staticData.previousApps = { '+14155550123': 'APP-OLD' };
-			staticData.events = ['incomingSms'];
-			(plivoApiRequest as Mock).mockImplementation(
-				async (method: string, endpoint: string) => {
-					if (method === 'GET' && endpoint === '/Application/APP-1') {
-						return { message_url: '', answer_url: '' };
-					}
-					return {};
-				},
-			);
+		it('clears the URLs, deletes an app it created, and restores the previous app', async () => {
+			staticData.managedApps = {
+				'+14155550123': { appId: 'APP-1', createdApp: true, previousAppId: 'APP-OLD', snapshot: {} },
+			};
 
 			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
 
 			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Application/APP-1', {
+				answer_url: '',
 				message_url: '',
 			});
 			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Number/14155550123', {
@@ -921,25 +928,68 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 			expect(staticData.managedApps).toBeUndefined();
 		});
 
-		it('keeps the app when the other function is still configured', async () => {
-			staticData.managedApps = { '+14155550123': 'APP-1' };
-			staticData.previousApps = {};
-			staticData.events = ['incomingCall'];
-			(plivoApiRequest as Mock).mockImplementation(
-				async (method: string, endpoint: string) => {
-					if (method === 'GET' && endpoint === '/Application/APP-1') {
-						return { message_url: 'https://kept', answer_url: '' };
-					}
-					return {};
-				},
-			);
+		it('does not delete an app it did not create', async () => {
+			staticData.managedApps = {
+				'+14155550123': { appId: 'APP-1', createdApp: false, previousAppId: '', snapshot: {} },
+			};
 
 			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
 
 			expect(plivoApiRequest).toHaveBeenCalledWith('POST', '/Application/APP-1', {
 				answer_url: '',
+				message_url: '',
 			});
 			expect(plivoApiRequest).not.toHaveBeenCalledWith('DELETE', expect.anything());
+		});
+	});
+
+	describe('test registration is non-destructive to production', () => {
+		it('snapshots the production URLs on a test create and restores them on test delete', async () => {
+			mockHookFunctions.getActivationMode.mockReturnValue('manual');
+			setParams(['incomingCall'], ['+14155550123']);
+			const TEST_URL = 'https://n8n.example.com/webhook-test/abc';
+			const PROD_URL = 'https://n8n.example.com/webhook/abc';
+			mockHookFunctions.getNodeWebhookUrl.mockReturnValue(TEST_URL);
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Number/14155550123') {
+						return { application: '/v1/Account/X/Application/APP-PROD/' };
+					}
+					if (method === 'GET' && endpoint === '/Application/APP-PROD') {
+						return {
+							app_name: 'n8n-plivo-trigger-14155550123',
+							answer_url: PROD_URL,
+							answer_method: 'POST',
+						};
+					}
+					return {};
+				},
+			);
+
+			// Test create points the number at the test URL and records under its own key.
+			await plivoTrigger.webhookMethods.default.create.call(mockHookFunctions);
+			expect(plivoApiRequest).toHaveBeenCalledWith(
+				'POST',
+				'/Application/APP-PROD',
+				expect.objectContaining({ answer_url: TEST_URL }),
+			);
+			expect(staticData.managedApps).toBeUndefined();
+			const entry = (staticData.testManagedApps as IDataObject)['+14155550123'] as IDataObject;
+			expect(entry.appId).toBe('APP-PROD');
+			expect(entry.createdApp).toBe(false);
+			expect((entry.snapshot as IDataObject).answer_url).toBe(PROD_URL);
+
+			(plivoApiRequest as Mock).mockClear();
+
+			// Test delete restores the production URL and never deletes or reassigns.
+			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
+			expect(plivoApiRequest).toHaveBeenCalledWith(
+				'POST',
+				'/Application/APP-PROD',
+				expect.objectContaining({ answer_url: PROD_URL }),
+			);
+			expect(plivoApiRequest).not.toHaveBeenCalledWith('DELETE', expect.anything());
+			expect(staticData.testManagedApps).toBeUndefined();
 		});
 	});
 });
