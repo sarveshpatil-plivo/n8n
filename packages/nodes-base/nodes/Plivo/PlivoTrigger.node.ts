@@ -6,10 +6,15 @@ import type {
 	IWebhookFunctions,
 	IWebhookResponseData,
 } from 'n8n-workflow';
-import { NodeConnectionTypes } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import { plivoApiRequest } from './GenericFunctions';
 import { verifyPlivoSignature, detectEventType } from './PlivoTriggerHelpers';
+
+// Extract the n8n webhook id from a webhook URL (the stable per-node segment, so it
+// survives editor/base-URL changes). Returns undefined for non-n8n URLs.
+const n8nWebhookId = (url: unknown): string | undefined =>
+	/\/(?:webhook|webhook-test)\/([^/?]+)/.exec(String(url ?? ''))?.[1];
 
 export class PlivoTrigger implements INodeType {
 	description: INodeTypeDescription = {
@@ -179,6 +184,27 @@ export class PlivoTrigger implements INodeType {
 							.call(this, 'GET', `/Application/${currentAppId}`)
 							.catch(() => undefined);
 						if (currentApp?.app_name === appName) {
+							// The number is already bound to an n8n Plivo Trigger. If that binding
+							// belongs to a different node (a different webhook id), another active
+							// workflow already owns this number for the same event — a Plivo number
+							// routes each inbound type to a single URL, so refuse instead of
+							// silently hijacking it.
+							const myWebhookId = n8nWebhookId(webhookUrl);
+							const callOwner = n8nWebhookId(currentApp.answer_url);
+							const smsOwner = n8nWebhookId(currentApp.message_url);
+							if (provisionCall && callOwner && callOwner !== myWebhookId) {
+								throw new NodeOperationError(
+									this.getNode(),
+									`The number ${number} is already receiving incoming calls in another active workflow. A Plivo number can route incoming calls to only one workflow at a time — deactivate the other workflow first.`,
+								);
+							}
+							if (provisionSms && smsOwner && smsOwner !== myWebhookId) {
+								throw new NodeOperationError(
+									this.getNode(),
+									`The number ${number} is already receiving incoming SMS in another active workflow. A Plivo number can route incoming SMS to only one workflow at a time — deactivate the other workflow first.`,
+								);
+							}
+
 							appId = currentAppId;
 							snapshot.answer_url = currentApp.answer_url ?? '';
 							snapshot.answer_method = currentApp.answer_method ?? 'POST';

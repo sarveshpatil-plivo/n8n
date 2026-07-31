@@ -909,6 +909,30 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 				((staticData.managedApps as IDataObject)['+14155550123'] as IDataObject).appId,
 			).toBe('APP-EXIST');
 		});
+
+		it('refuses to publish when the number is already managed by another workflow', async () => {
+			setParams(['incomingCall'], ['+14155550123']);
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string) => {
+					if (method === 'GET' && endpoint === '/Number/14155550123') {
+						return { application: '/v1/Account/X/Application/APP-EXIST/' };
+					}
+					if (method === 'GET' && endpoint === '/Application/APP-EXIST') {
+						// answer_url points at a different node's webhook id than WEBHOOK ('/webhook/abc').
+						return {
+							app_name: 'n8n-plivo-trigger-14155550123',
+							answer_url: 'https://n8n.example.com/webhook/other-node/webhook',
+						};
+					}
+					return {};
+				},
+			);
+
+			await expect(
+				plivoTrigger.webhookMethods.default.create.call(mockHookFunctions),
+			).rejects.toThrow(/already receiving incoming calls in another active workflow/);
+			expect(plivoApiRequest).not.toHaveBeenCalledWith('DELETE', expect.anything());
+		});
 	});
 
 	describe('delete', () => {
