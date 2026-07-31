@@ -26,6 +26,7 @@ describe('PlivoTrigger Node', () => {
 		send: Mock;
 		json: Mock;
 		end: Mock;
+		setHeader: Mock;
 	};
 
 	beforeEach(() => {
@@ -39,6 +40,7 @@ describe('PlivoTrigger Node', () => {
 			send: vi.fn().mockReturnThis(),
 			json: vi.fn().mockReturnThis(),
 			end: vi.fn(),
+			setHeader: vi.fn().mockReturnThis(),
 		};
 
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -203,14 +205,17 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('should process incoming call when subscribed', async () => {
+		it('should process incoming call when subscribed and answer with Speak XML', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['incomingCall'];
-				return undefined;
-			});
+			mockWebhookFunctions.getNodeParameter.mockImplementation(
+				(paramName: string, fallback?: unknown) => {
+					if (paramName === 'validateSignature') return true;
+					if (paramName === 'events') return ['incomingCall'];
+					if (paramName === 'answerMessage') return 'Your call has been received.';
+					return fallback;
+				},
+			);
 
 			const bodyData = {
 				CallUUID: 'call-123',
@@ -223,6 +228,13 @@ describe('PlivoTrigger Node', () => {
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
+			// Answers the call with call-control XML while still triggering the workflow.
+			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
+			expect(mockResponse.status).toHaveBeenCalledWith(200);
+			expect(mockResponse.send).toHaveBeenCalledWith(
+				'<Response><Speak>Your call has been received.</Speak></Response>',
+			);
+			expect(result.noWebhookResponse).toBe(true);
 			expect(result.workflowData).toBeDefined();
 			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
 				...bodyData,
@@ -368,11 +380,14 @@ describe('PlivoTrigger Node', () => {
 		it('should handle complete Plivo incoming call payload', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['incomingCall'];
-				return undefined;
-			});
+			mockWebhookFunctions.getNodeParameter.mockImplementation(
+				(paramName: string, fallback?: unknown) => {
+					if (paramName === 'validateSignature') return true;
+					if (paramName === 'events') return ['incomingCall'];
+					if (paramName === 'answerMessage') return 'Your call has been received.';
+					return fallback;
+				},
+			);
 
 			const bodyData = {
 				CallUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
@@ -528,17 +543,22 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			await vi.importActual<typeof import('./PlivoTriggerHelpers')>('./PlivoTriggerHelpers'));
 	});
 
-	// Helper to compute expected signature
+	// Helper to compute the expected signature using Plivo's V3 base string:
+	// URL, then (for POST) the params in key-sorted order as key+value, then the nonce.
 	function computeExpectedSignature(
 		authToken: string,
 		webhookUrl: string,
 		nonce: string,
-		body?: string,
+		params?: Record<string, string>,
 	): string {
-		let baseString = webhookUrl + nonce;
-		if (body) {
-			baseString += body;
+		let baseString = webhookUrl;
+		if (params) {
+			baseString += Object.keys(params)
+				.sort()
+				.map((key) => `${key}${params[key]}`)
+				.join('');
 		}
+		baseString += nonce;
 		const hmac = createHmac('sha256', authToken);
 		hmac.update(baseString);
 		return hmac.digest('base64');
@@ -550,7 +570,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		nonce?: string;
 		webhookUrl?: string;
 		method?: string;
-		rawBody?: string | Buffer;
+		params?: Record<string, string>;
 	}) {
 		const {
 			authToken = 'test-auth-token',
@@ -558,7 +578,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			nonce,
 			webhookUrl = 'https://example.com/webhook/plivo',
 			method = 'POST',
-			rawBody,
+			params,
 		} = options;
 
 		return {
@@ -572,8 +592,8 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 					'x-plivo-signature-v3-nonce': nonce,
 				},
 				method,
-				rawBody,
 			}),
+			getBodyData: vi.fn().mockReturnValue(params ?? {}),
 			getNodeWebhookUrl: vi.fn().mockReturnValue(webhookUrl),
 		};
 	}
@@ -627,12 +647,12 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		expect(result).toBe(true);
 	});
 
-	it('should validate correct signature for POST request with string body', async () => {
+	it('should validate correct signature for POST request with params', async () => {
 		const authToken = 'test-auth-token-12345';
 		const webhookUrl = 'https://example.com/webhook/plivo';
 		const nonce = '12345678';
-		const body = 'From=%2B14155551234&To=%2B14155555678&Text=Hello';
-		const expectedSignature = computeExpectedSignature(authToken, webhookUrl, nonce, body);
+		const params = { From: '+14155551234', To: '+14155555678', Text: 'Hello' };
+		const expectedSignature = computeExpectedSignature(authToken, webhookUrl, nonce, params);
 
 		const mockFunctions = createMockWebhookFunctions({
 			authToken,
@@ -640,19 +660,23 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			nonce,
 			signature: expectedSignature,
 			method: 'POST',
-			rawBody: body,
+			params,
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
 		expect(result).toBe(true);
 	});
 
-	it('should validate correct signature for POST request with Buffer body', async () => {
+	it('should validate regardless of POST parameter order', async () => {
 		const authToken = 'test-auth-token-12345';
 		const webhookUrl = 'https://example.com/webhook/plivo';
 		const nonce = '12345678';
-		const body = 'From=%2B14155551234&To=%2B14155555678&Text=Hello';
-		const expectedSignature = computeExpectedSignature(authToken, webhookUrl, nonce, body);
+		// Signature computed from one order; request delivers a different order.
+		const expectedSignature = computeExpectedSignature(authToken, webhookUrl, nonce, {
+			From: '+14155551234',
+			To: '+14155555678',
+			Text: 'Hello',
+		});
 
 		const mockFunctions = createMockWebhookFunctions({
 			authToken,
@@ -660,7 +684,27 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			nonce,
 			signature: expectedSignature,
 			method: 'POST',
-			rawBody: Buffer.from(body),
+			params: { Text: 'Hello', To: '+14155555678', From: '+14155551234' },
+		});
+
+		const result = await realVerifyPlivoSignature.call(mockFunctions);
+		expect(result).toBe(true);
+	});
+
+	it('should accept a matching signature among comma-separated signatures', async () => {
+		const authToken = 'test-auth-token-12345';
+		const webhookUrl = 'https://example.com/webhook/plivo';
+		const nonce = '12345678';
+		const params = { From: '+14155551234', Text: 'Hello' };
+		const valid = computeExpectedSignature(authToken, webhookUrl, nonce, params);
+
+		const mockFunctions = createMockWebhookFunctions({
+			authToken,
+			webhookUrl,
+			nonce,
+			signature: `some-other-signature,${valid}`,
+			method: 'POST',
+			params,
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
@@ -708,10 +752,10 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const authToken = 'test-auth-token-12345';
 		const webhookUrl = 'https://example.com/webhook/plivo';
 		const nonce = '12345678';
-		const originalBody = 'From=%2B14155551234&Text=Original';
-		const tamperedBody = 'From=%2B14155551234&Text=Tampered';
-		// Signature computed with original body
-		const signature = computeExpectedSignature(authToken, webhookUrl, nonce, originalBody);
+		const originalParams = { From: '+14155551234', Text: 'Original' };
+		const tamperedParams = { From: '+14155551234', Text: 'Tampered' };
+		// Signature computed with original params
+		const signature = computeExpectedSignature(authToken, webhookUrl, nonce, originalParams);
 
 		const mockFunctions = createMockWebhookFunctions({
 			authToken,
@@ -719,7 +763,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			nonce,
 			signature,
 			method: 'POST',
-			rawBody: tamperedBody, // But request has tampered body
+			params: tamperedParams, // But request delivers tampered params
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
