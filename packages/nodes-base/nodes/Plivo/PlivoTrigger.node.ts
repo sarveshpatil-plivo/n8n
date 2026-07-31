@@ -55,11 +55,6 @@ export class PlivoTrigger implements INodeType {
 						value: 'incomingSms',
 						description: 'Trigger when an SMS is received on a Plivo number',
 					},
-					{
-						name: 'SMS Delivery Status',
-						value: 'smsStatus',
-						description: 'Trigger when an SMS delivery status update is received',
-					},
 				],
 				default: ['incomingSms'],
 				required: true,
@@ -85,6 +80,19 @@ export class PlivoTrigger implements INodeType {
 					'The Plivo number(s) in E.164 to receive events on, each pointed at this webhook while the workflow is active and restored when it is deactivated',
 			},
 			{
+				displayName: 'Call Answer Message',
+				name: 'answerMessage',
+				type: 'string',
+				default: 'Your call has been received.',
+				displayOptions: {
+					show: {
+						events: ['incomingCall'],
+					},
+				},
+				description:
+					'Spoken to the caller when an incoming call is answered. Plivo requires a spoken or played response to answer the call, so leaving this empty will hang up without answering.',
+			},
+			{
 				displayName: 'Validate Signature',
 				name: 'validateSignature',
 				type: 'boolean',
@@ -94,7 +102,7 @@ export class PlivoTrigger implements INodeType {
 			},
 			{
 				displayName:
-					'While this workflow is active, the selected Plivo number(s) are automatically pointed at this webhook and restored when it is deactivated. SMS delivery status is delivered to the callback URL on your outbound Message API request, not configured here.',
+					'While this workflow is active, the selected Plivo number(s) are automatically pointed at this webhook and restored when it is deactivated.',
 				name: 'notice',
 				type: 'notice',
 				default: '',
@@ -135,14 +143,15 @@ export class PlivoTrigger implements INodeType {
 
 					let appId = '';
 					if (currentAppId) {
-						const currentApp = await plivoApiRequest.call(
-							this,
-							'GET',
-							`/Application/${currentAppId}`,
-						);
-						if (currentApp.app_name === appName) {
+						// The number may reference an application that no longer exists (e.g. a
+						// stale binding left by a deleted app). Treat that as unmanaged and
+						// provision a fresh application instead of failing the activation.
+						const currentApp = await plivoApiRequest
+							.call(this, 'GET', `/Application/${currentAppId}`)
+							.catch(() => undefined);
+						if (currentApp?.app_name === appName) {
 							appId = currentAppId;
-						} else {
+						} else if (currentApp) {
 							previousApps[number] = currentAppId;
 						}
 					}
@@ -251,6 +260,31 @@ export class PlivoTrigger implements INodeType {
 			...bodyData,
 			_eventType: eventType,
 		};
+
+		// Plivo answers an inbound call by fetching call-control XML from the answer
+		// URL, so a voice event must be replied to with a <Response> document or the
+		// call fails. An empty <Response> ends the call without answering, so speak the
+		// configured message to answer it. An incoming SMS only needs a 200, which n8n
+		// returns by default.
+		if (eventType === 'incomingCall') {
+			const answerMessage = this.getNodeParameter(
+				'answerMessage',
+				'Your call has been received.',
+			) as string;
+			const escaped = answerMessage
+				.replace(/&/g, '&amp;')
+				.replace(/</g, '&lt;')
+				.replace(/>/g, '&gt;');
+			const body = escaped ? `<Response><Speak>${escaped}</Speak></Response>` : '<Response></Response>';
+
+			const res = this.getResponseObject();
+			res.setHeader('Content-Type', 'text/xml');
+			res.status(200).send(body);
+			return {
+				noWebhookResponse: true,
+				workflowData: [this.helpers.returnJsonArray(returnData)],
+			};
+		}
 
 		return {
 			workflowData: [this.helpers.returnJsonArray(returnData)],

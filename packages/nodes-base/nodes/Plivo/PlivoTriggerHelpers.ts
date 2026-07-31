@@ -6,11 +6,10 @@ import type { IWebhookFunctions } from 'n8n-workflow';
  *
  * Algorithm:
  * 1. Get X-Plivo-Signature-V3 and X-Plivo-Signature-V3-Nonce headers
- * 2. Construct base string: webhookUrl + nonce
- * 3. For POST requests, append the request body
- * 4. Compute HMAC-SHA256 using Auth Token as key
- * 5. Base64 encode the result
- * 6. Compare with timing-safe equality
+ * 2. Construct base string: webhookUrl, then for POST the parameters in
+ *    key-sorted order (each as key + value, no separators), then the nonce
+ * 3. Compute HMAC-SHA256 using Auth Token as key, base64 encoded
+ * 4. Compare against each comma-separated provided signature with timing-safe equality
  */
 export async function verifyPlivoSignature(this: IWebhookFunctions): Promise<boolean> {
 	const credentials = await this.getCredentials<{
@@ -36,38 +35,31 @@ export async function verifyPlivoSignature(this: IWebhookFunctions): Promise<boo
 	}
 
 	try {
-		// Get the full webhook URL
-		const webhookUrl = this.getNodeWebhookUrl('default');
+		const webhookUrl = this.getNodeWebhookUrl('default') as string;
 
-		// Construct the base string: URL + nonce
-		let baseString = webhookUrl + nonce;
+		// Plivo V3: the signed base string is the request URL with the POST
+		// parameters appended in key-sorted order (each as key + value, no
+		// separators), followed by the nonce; HMAC-SHA256 with the auth token,
+		// base64-encoded.
+		const params = (this.getBodyData() ?? {}) as Record<string, unknown>;
+		const sortedParams = Object.keys(params)
+			.sort()
+			.map((key) => `${key}${params[key] as string}`)
+			.join('');
+		const baseString = req.method === 'GET' ? webhookUrl + nonce : webhookUrl + sortedParams + nonce;
 
-		// For POST requests, append the request body
-		if (req.method === 'POST' && req.rawBody) {
-			let bodyString: string;
-			if (Buffer.isBuffer(req.rawBody)) {
-				bodyString = req.rawBody.toString('utf8');
-			} else if (typeof req.rawBody === 'string') {
-				bodyString = req.rawBody;
-			} else {
-				bodyString = JSON.stringify(req.rawBody);
-			}
-			baseString += bodyString;
-		}
+		const computedSignature = createHmac('sha256', credentials.authToken)
+			.update(baseString)
+			.digest('base64');
 
-		// Compute HMAC-SHA256 with auth token as key
-		const hmac = createHmac('sha256', credentials.authToken);
-		hmac.update(baseString);
-		const computedSignature = hmac.digest('base64');
-
-		// Timing-safe comparison
 		const computedBuffer = Buffer.from(computedSignature);
-		const providedBuffer = Buffer.from(signature);
-
-		return (
-			computedBuffer.length === providedBuffer.length &&
-			timingSafeEqual(computedBuffer, providedBuffer)
-		);
+		return signature.split(',').some((provided) => {
+			const providedBuffer = Buffer.from(provided.trim());
+			return (
+				computedBuffer.length === providedBuffer.length &&
+				timingSafeEqual(computedBuffer, providedBuffer)
+			);
+		});
 	} catch {
 		return false;
 	}
