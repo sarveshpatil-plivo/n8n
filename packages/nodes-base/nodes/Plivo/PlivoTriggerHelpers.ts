@@ -2,14 +2,18 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import type { IWebhookFunctions } from 'n8n-workflow';
 
 /**
- * Verify X-Plivo-Signature-V3 header for incoming webhooks.
+ * Verify Plivo's V3 signature for incoming webhooks.
  *
- * Algorithm:
- * 1. Get X-Plivo-Signature-V3 and X-Plivo-Signature-V3-Nonce headers
- * 2. Construct base string: webhookUrl, then for POST the parameters in
- *    key-sorted order (each as key + value, no separators), then the nonce
- * 3. Compute HMAC-SHA256 using Auth Token as key, base64 encoded
- * 4. Compare against each comma-separated provided signature with timing-safe equality
+ * Reproduces the base string from Plivo's official SDK (lib/utils/v3Security.js):
+ * the request URL, then for a POST the parameters in key-sorted order concatenated
+ * as key+value (prefixed with "?" when any exist), then "." then the nonce; a GET
+ * appends the sorted params as a "key=value&" query string instead. HMAC-SHA256
+ * with the Auth Token, base64-encoded.
+ *
+ * Plivo delivers this value in the X-Plivo-Signature-Ma-V3 header on application
+ * (voice and messaging) webhooks — verified against real inbound SMS and call
+ * requests. It also sends a plain X-Plivo-Signature-V3 header computed by a
+ * different scheme, so both are accepted and a match against either passes.
  */
 export async function verifyPlivoSignature(this: IWebhookFunctions): Promise<boolean> {
 	const credentials = await this.getCredentials<{
@@ -23,38 +27,62 @@ export async function verifyPlivoSignature(this: IWebhookFunctions): Promise<boo
 
 	const req = this.getRequestObject();
 
-	const signatureHeader = req.headers['x-plivo-signature-v3'];
 	const nonceHeader = req.headers['x-plivo-signature-v3-nonce'];
-
-	// Headers can be string | string[] | undefined, extract first value if array
-	const signature = Array.isArray(signatureHeader) ? signatureHeader[0] : signatureHeader;
 	const nonce = Array.isArray(nonceHeader) ? nonceHeader[0] : nonceHeader;
 
-	if (!signature || !nonce) {
+	// Collect the candidate signatures from both V3 headers, splitting the
+	// comma-separated lists Plivo may send.
+	const collect = (header: string | string[] | undefined): string[] =>
+		(Array.isArray(header) ? header : header ? [header] : [])
+			.flatMap((value) => value.split(','))
+			.map((value) => value.trim())
+			.filter(Boolean);
+	const provided = [
+		...collect(req.headers['x-plivo-signature-ma-v3']),
+		...collect(req.headers['x-plivo-signature-v3']),
+	];
+
+	if (!nonce || provided.length === 0) {
 		return false;
 	}
 
 	try {
 		const webhookUrl = this.getNodeWebhookUrl('default') as string;
-
-		// Plivo V3: the signed base string is the request URL with the POST
-		// parameters appended in key-sorted order (each as key + value, no
-		// separators), followed by the nonce; HMAC-SHA256 with the auth token,
-		// base64-encoded.
 		const params = (this.getBodyData() ?? {}) as Record<string, unknown>;
-		const sortedParams = Object.keys(params)
-			.sort()
-			.map((key) => `${key}${params[key] as string}`)
-			.join('');
-		const baseString = req.method === 'GET' ? webhookUrl + nonce : webhookUrl + sortedParams + nonce;
+		const keys = Object.keys(params).sort();
+
+		let baseString: string;
+		if (req.method === 'GET') {
+			const query = keys
+				.flatMap((key) => {
+					const value = params[key];
+					return Array.isArray(value)
+						? [...value].sort().map((v) => `${key}=${v as string}`)
+						: [`${key}=${value ?? ''}`];
+				})
+				.join('&');
+			baseString = query ? `${webhookUrl}?${query}.${nonce}` : `${webhookUrl}.${nonce}`;
+		} else {
+			const paramString = keys
+				.map((key) => {
+					const value = params[key];
+					return Array.isArray(value)
+						? [...value].sort().map((v) => `${key}${v as string}`).join('')
+						: `${key}${value ?? ''}`;
+				})
+				.join('');
+			baseString = paramString
+				? `${webhookUrl}?${paramString}.${nonce}`
+				: `${webhookUrl}.${nonce}`;
+		}
 
 		const computedSignature = createHmac('sha256', credentials.authToken)
 			.update(baseString)
 			.digest('base64');
 
 		const computedBuffer = Buffer.from(computedSignature);
-		return signature.split(',').some((provided) => {
-			const providedBuffer = Buffer.from(provided.trim());
+		return provided.some((signature) => {
+			const providedBuffer = Buffer.from(signature);
 			return (
 				computedBuffer.length === providedBuffer.length &&
 				timingSafeEqual(computedBuffer, providedBuffer)

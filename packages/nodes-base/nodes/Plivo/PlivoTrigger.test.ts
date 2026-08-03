@@ -545,22 +545,27 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			await vi.importActual<typeof import('./PlivoTriggerHelpers')>('./PlivoTriggerHelpers'));
 	});
 
-	// Helper to compute the expected signature using Plivo's V3 base string:
-	// URL, then (for POST) the params in key-sorted order as key+value, then the nonce.
+	// Helper to compute the expected signature using Plivo's V3 base string
+	// (see PlivoTriggerHelpers / plivo SDK v3Security.js): the URL, then for a POST
+	// the params in key-sorted order concatenated as key+value prefixed with "?"
+	// (a GET uses a "key=value&" query string), then "." then the nonce.
 	function computeExpectedSignature(
 		authToken: string,
 		webhookUrl: string,
 		nonce: string,
 		params?: Record<string, string>,
+		method: 'GET' | 'POST' = 'POST',
 	): string {
 		let baseString = webhookUrl;
-		if (params) {
-			baseString += Object.keys(params)
-				.sort()
-				.map((key) => `${key}${params[key]}`)
-				.join('');
+		const keys = params ? Object.keys(params).sort() : [];
+		if (keys.length > 0) {
+			baseString +=
+				'?' +
+				(method === 'GET'
+					? keys.map((key) => `${key}=${params![key]}`).join('&')
+					: keys.map((key) => `${key}${params![key]}`).join(''));
 		}
-		baseString += nonce;
+		baseString += `.${nonce}`;
 		const hmac = createHmac('sha256', authToken);
 		hmac.update(baseString);
 		return hmac.digest('base64');
@@ -569,6 +574,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 	function createMockWebhookFunctions(options: {
 		authToken?: string;
 		signature?: string;
+		maV3Signature?: string;
 		nonce?: string;
 		webhookUrl?: string;
 		method?: string;
@@ -577,6 +583,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const {
 			authToken = 'test-auth-token',
 			signature,
+			maV3Signature,
 			nonce,
 			webhookUrl = 'https://example.com/webhook/plivo',
 			method = 'POST',
@@ -591,6 +598,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			getRequestObject: vi.fn().mockReturnValue({
 				headers: {
 					'x-plivo-signature-v3': signature,
+					'x-plivo-signature-ma-v3': maV3Signature,
 					'x-plivo-signature-v3-nonce': nonce,
 				},
 				method,
@@ -795,6 +803,98 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const signature = computeExpectedSignature(authToken, webhookUrl, nonce);
 		// Verify it's valid base64 by decoding and re-encoding
 		expect(Buffer.from(signature, 'base64').toString('base64')).toBe(signature);
+	});
+
+	// Real inbound payloads captured from Plivo (values only; the signatures below are
+	// recomputed with a throwaway token, since Plivo delivers this value in the
+	// X-Plivo-Signature-Ma-V3 header). These lock in the exact key+value/empty-param
+	// handling and the "?" / "." separators of the base string against real traffic.
+	const CAPTURED_URL = 'https://involves-calculate-transactions-explorer.trycloudflare.com/plivo';
+	const SMS_PARAMS: Record<string, string> = {
+		CarrierFees: '0.00000',
+		CarrierFeesRate: '0.00000',
+		DestinationCountryISO: 'US',
+		DestinationNetwork: '',
+		From: '19722758847',
+		MessageIntent: '',
+		MessageTime: '2026-08-03 15:53:23.990077',
+		MessageUUID: '15197131-ba5d-4d8d-ab9f-e879ed29a8fe',
+		PowerpackUUID: '',
+		Text: 'sigtest hello world 123',
+		To: '14245502321',
+		TotalAmount: '0.00700',
+		TotalRate: '0.007',
+		Type: 'sms',
+		Units: '1',
+	};
+	const CALL_PARAMS: Record<string, string> = {
+		BillRate: '0.0055',
+		CallStatus: 'ringing',
+		CallUUID: '7e46ec41-657b-4ba9-bdb8-db4e651d2ce1',
+		CallerName: '+19722758847',
+		CountryCode: '',
+		Direction: 'inbound',
+		Event: 'StartApp',
+		From: '19722758847',
+		ParentAuthID: 'REDACTED_PARENT_AUTH_ID',
+		RouteType: 'Not_Domestic',
+		STIRAttestation: 'Not Applicable',
+		STIRVerification: 'Not Applicable',
+		SessionStart: '2026-08-03 15:56:35.002563',
+		To: '14245502321',
+	};
+
+	it('validates a real inbound SMS payload via the Ma-V3 header', async () => {
+		const authToken = 'token-for-sms-fixture';
+		const nonce = '34264034969940645708';
+		// Plivo puts the value we reproduce in Ma-V3; leave a decoy in the plain V3 header.
+		const maV3Signature = computeExpectedSignature(authToken, CAPTURED_URL, nonce, SMS_PARAMS);
+
+		const mockFunctions = createMockWebhookFunctions({
+			authToken,
+			webhookUrl: CAPTURED_URL,
+			nonce,
+			maV3Signature,
+			signature: 'not-the-one-that-matches',
+			method: 'POST',
+			params: SMS_PARAMS,
+		});
+
+		expect(await realVerifyPlivoSignature.call(mockFunctions)).toBe(true);
+	});
+
+	it('validates a real inbound call payload via the Ma-V3 header', async () => {
+		const authToken = 'token-for-call-fixture';
+		const nonce = '94774414766192456316';
+		const maV3Signature = computeExpectedSignature(authToken, CAPTURED_URL, nonce, CALL_PARAMS);
+
+		const mockFunctions = createMockWebhookFunctions({
+			authToken,
+			webhookUrl: CAPTURED_URL,
+			nonce,
+			maV3Signature,
+			method: 'POST',
+			params: CALL_PARAMS,
+		});
+
+		expect(await realVerifyPlivoSignature.call(mockFunctions)).toBe(true);
+	});
+
+	it('rejects a real payload whose body was tampered', async () => {
+		const authToken = 'token-for-sms-fixture';
+		const nonce = '34264034969940645708';
+		const maV3Signature = computeExpectedSignature(authToken, CAPTURED_URL, nonce, SMS_PARAMS);
+
+		const mockFunctions = createMockWebhookFunctions({
+			authToken,
+			webhookUrl: CAPTURED_URL,
+			nonce,
+			maV3Signature,
+			method: 'POST',
+			params: { ...SMS_PARAMS, Text: 'tampered' },
+		});
+
+		expect(await realVerifyPlivoSignature.call(mockFunctions)).toBe(false);
 	});
 });
 
