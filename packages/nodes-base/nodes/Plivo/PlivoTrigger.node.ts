@@ -40,7 +40,7 @@ export class PlivoTrigger implements INodeType {
 			{
 				name: 'default',
 				httpMethod: 'POST',
-				responseMode: 'onReceived',
+				responseMode: '={{$parameter["responseMode"]}}',
 				path: 'webhook',
 			},
 		],
@@ -85,35 +85,30 @@ export class PlivoTrigger implements INodeType {
 					'The Plivo number(s) in E.164 to receive events on, each pointed at this webhook while the workflow is active and restored when it is deactivated',
 			},
 			{
-				displayName: 'Answer URL',
-				name: 'answerUrl',
-				type: 'string',
-				required: true,
-				displayOptions: {
-					show: {
-						events: ['incomingCall'],
-					},
-				},
-				default: '',
-				placeholder: 'https://example.com/answer',
-				description:
-					'URL that returns Plivo call-control XML. When a call comes in the workflow is triggered and Plivo is redirected here to control the call, the same as the Make a Call action node.',
-			},
-			{
-				displayName: 'Answer Method',
-				name: 'answerMethod',
+				displayName: 'Respond',
+				name: 'responseMode',
 				type: 'options',
 				options: [
-					{ name: 'POST', value: 'POST' },
-					{ name: 'GET', value: 'GET' },
-				],
-				default: 'POST',
-				displayOptions: {
-					show: {
-						events: ['incomingCall'],
+					{
+						name: 'Immediately',
+						value: 'onReceived',
+						description: 'Respond with a 200 as soon as the event is received. Use this for incoming SMS.',
 					},
-				},
-				description: 'HTTP method Plivo uses to fetch the Answer URL',
+					{
+						name: 'When Last Node Finishes',
+						value: 'lastNode',
+						description: 'Respond once the workflow finishes, with the output of the last node',
+					},
+					{
+						name: "Using 'Respond to Webhook' Node",
+						value: 'responseNode',
+						description:
+							'Respond from a downstream Respond to Webhook node. Use this for incoming calls: return Plivo answer XML (for example Stream, Speak, or Redirect) from that node.',
+					},
+				],
+				default: 'onReceived',
+				description:
+					'When and how to respond to Plivo. For an incoming call, choose "Using \'Respond to Webhook\' Node" and add a Respond to Webhook node that returns Plivo answer XML to control the call.',
 			},
 			{
 				displayName: 'Validate Signature',
@@ -125,7 +120,7 @@ export class PlivoTrigger implements INodeType {
 			},
 			{
 				displayName:
-					'While this workflow is active, the selected Plivo number(s) are automatically pointed at this webhook and restored when it is deactivated.',
+					'While this workflow is active, the selected Plivo number(s) are automatically pointed at this webhook and restored when it is deactivated. For an incoming call, set Respond to "Using \'Respond to Webhook\' Node" and add a Respond to Webhook node that returns Plivo answer XML.',
 				name: 'notice',
 				type: 'notice',
 				default: '',
@@ -325,28 +320,6 @@ export class PlivoTrigger implements INodeType {
 			...bodyData,
 			_eventType: eventType,
 		};
-
-		// Plivo answers an inbound call by fetching call-control XML from the answer
-		// URL. The webhook triggers the workflow and redirects Plivo to the user's
-		// Answer URL to control the call. An incoming SMS only needs a 200, which n8n
-		// returns by default.
-		if (eventType === 'incomingCall') {
-			const answerUrl = this.getNodeParameter('answerUrl', '') as string;
-			const answerMethod = this.getNodeParameter('answerMethod', 'POST') as string;
-			const escapedUrl = answerUrl
-				.replace(/&/g, '&amp;')
-				.replace(/</g, '&lt;')
-				.replace(/>/g, '&gt;');
-			const responseXml = `<Response><Redirect method="${answerMethod}">${escapedUrl}</Redirect></Response>`;
-
-			const res = this.getResponseObject();
-			res.setHeader('Content-Type', 'text/xml');
-			res.status(200).send(responseXml);
-			return {
-				noWebhookResponse: true,
-				workflowData: [this.helpers.returnJsonArray(returnData)],
-			};
-		}
 
 		return {
 			workflowData: [this.helpers.returnJsonArray(returnData)],

@@ -205,18 +205,14 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('redirects Plivo to the configured Answer URL and triggers the workflow', async () => {
+		it('starts the workflow on an incoming call and leaves the response to a downstream node', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
-			mockWebhookFunctions.getNodeParameter.mockImplementation(
-				(paramName: string, fallback?: unknown) => {
-					if (paramName === 'validateSignature') return true;
-					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'answerUrl') return 'https://example.com/answer';
-					if (paramName === 'answerMethod') return 'GET';
-					return fallback;
-				},
-			);
+			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
+				if (paramName === 'validateSignature') return true;
+				if (paramName === 'events') return ['incomingCall'];
+				return undefined;
+			});
 
 			const bodyData = {
 				CallUUID: 'call-123',
@@ -229,13 +225,9 @@ describe('PlivoTrigger Node', () => {
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
-			// Redirects Plivo to the user's Answer URL for call control while triggering the workflow.
-			expect(mockResponse.setHeader).toHaveBeenCalledWith('Content-Type', 'text/xml');
-			expect(mockResponse.status).toHaveBeenCalledWith(200);
-			expect(mockResponse.send).toHaveBeenCalledWith(
-				'<Response><Redirect method="GET">https://example.com/answer</Redirect></Response>',
-			);
-			expect(result.noWebhookResponse).toBe(true);
+			expect(mockResponse.send).not.toHaveBeenCalled();
+			expect(mockResponse.setHeader).not.toHaveBeenCalled();
+			expect(result.noWebhookResponse).toBeUndefined();
 			expect(result.workflowData).toBeDefined();
 			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
 				...bodyData,
@@ -381,15 +373,11 @@ describe('PlivoTrigger Node', () => {
 		it('should handle complete Plivo incoming call payload', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
-			mockWebhookFunctions.getNodeParameter.mockImplementation(
-				(paramName: string, fallback?: unknown) => {
-					if (paramName === 'validateSignature') return true;
-					if (paramName === 'events') return ['incomingCall'];
-					if (paramName === 'answerUrl') return 'https://example.com/answer';
-					if (paramName === 'answerMethod') return 'POST';
-					return fallback;
-				},
-			);
+			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
+				if (paramName === 'validateSignature') return true;
+				if (paramName === 'events') return ['incomingCall'];
+				return undefined;
+			});
 
 			const bodyData = {
 				CallUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
