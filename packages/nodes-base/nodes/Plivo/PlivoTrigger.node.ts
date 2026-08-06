@@ -11,8 +11,6 @@ import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import { plivoApiRequest } from './GenericFunctions';
 import { verifyPlivoSignature, detectEventType } from './PlivoTriggerHelpers';
 
-// Extract the n8n webhook id from a webhook URL (the stable per-node segment, so it
-// survives editor/base-URL changes). Returns undefined for non-n8n URLs.
 const n8nWebhookId = (url: unknown): string | undefined =>
 	/\/(?:webhook|webhook-test)\/([^/?]+)/.exec(String(url ?? ''))?.[1];
 
@@ -131,10 +129,6 @@ export class PlivoTrigger implements INodeType {
 	webhookMethods = {
 		default: {
 			async checkExists(this: IHookFunctions): Promise<boolean> {
-				// n8n registers a separate test webhook (activation mode 'manual') alongside
-				// the production one. Because a Plivo number has a single application/URL slot
-				// they share, each registration is tracked under its own static-data key so a
-				// test run never clobbers an active production binding.
 				const key = this.getActivationMode() === 'manual' ? 'testManagedApps' : 'managedApps';
 				return this.getWorkflowStaticData('node')[key] !== undefined;
 			},
@@ -167,23 +161,13 @@ export class PlivoTrigger implements INodeType {
 					let appId = '';
 					let createdApp = false;
 					let previousAppId = '';
-					// URLs the application had before we repointed it, so a temporary test
-					// registration can restore an active production binding when it ends.
 					const snapshot: IDataObject = {};
 
 					if (currentAppId) {
-						// The number may reference an application that no longer exists (e.g. a
-						// stale binding left by a deleted app). Treat that as unmanaged and
-						// provision a fresh application instead of failing the activation.
 						const currentApp = await plivoApiRequest
 							.call(this, 'GET', `/Application/${currentAppId}`)
 							.catch(() => undefined);
 						if (currentApp?.app_name === appName) {
-							// The number is already bound to an n8n Plivo Trigger. If that binding
-							// belongs to a different node (a different webhook id), another active
-							// workflow already owns this number for the same event — a Plivo number
-							// routes each inbound type to a single URL, so refuse instead of
-							// silently hijacking it.
 							const myWebhookId = n8nWebhookId(webhookUrl);
 							const callOwner = n8nWebhookId(currentApp.answer_url);
 							const smsOwner = n8nWebhookId(currentApp.message_url);
@@ -254,8 +238,6 @@ export class PlivoTrigger implements INodeType {
 					};
 
 					if (isTest) {
-						// A test registration only borrowed the number, so put the application's
-						// URLs back exactly as they were and leave everything else in place.
 						await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
 							answer_url: entry.snapshot.answer_url ?? '',
 							answer_method: entry.snapshot.answer_method ?? 'POST',
@@ -265,8 +247,6 @@ export class PlivoTrigger implements INodeType {
 						continue;
 					}
 
-					// Production teardown: clear our URLs, and if we created the application,
-					// reattach any prior application to the number and delete ours.
 					await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
 						answer_url: '',
 						message_url: '',
@@ -292,7 +272,6 @@ export class PlivoTrigger implements INodeType {
 		const validateSignature = this.getNodeParameter('validateSignature', true) as boolean;
 		const events = this.getNodeParameter('events', []) as string[];
 
-		// Validate signature if enabled
 		if (validateSignature) {
 			const isValid = await verifyPlivoSignature.call(this);
 			if (!isValid) {
@@ -306,16 +285,12 @@ export class PlivoTrigger implements INodeType {
 
 		const bodyData = this.getBodyData() as IDataObject;
 
-		// Detect event type from payload
 		const eventType = detectEventType(bodyData as Record<string, unknown>);
 
-		// Check if this event type is one we're listening for
 		if (!events.includes(eventType)) {
-			// Silently ignore events we're not subscribed to
 			return {};
 		}
 
-		// Add metadata to the response
 		const returnData: IDataObject = {
 			...bodyData,
 			_eventType: eventType,

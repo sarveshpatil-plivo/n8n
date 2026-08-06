@@ -8,7 +8,6 @@ import { plivoApiRequest } from './GenericFunctions';
 import { PlivoTrigger } from './PlivoTrigger.node';
 import { detectEventType, verifyPlivoSignature } from './PlivoTriggerHelpers';
 
-// Mock the helper functions
 vi.mock('./PlivoTriggerHelpers', () => ({
 	verifyPlivoSignature: vi.fn(),
 	detectEventType: vi.fn(),
@@ -46,12 +45,10 @@ describe('PlivoTrigger Node', () => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		mockWebhookFunctions.getResponseObject.mockReturnValue(mockResponse as any);
 
-		// Mock helpers.returnJsonArray
 		mockWebhookFunctions.helpers = {
 			returnJsonArray: vi.fn((data) => [{ json: data }]),
 		} as unknown as IWebhookFunctions['helpers'];
 
-		// Default: signature validation enabled and valid
 		(verifyPlivoSignature as Mock).mockResolvedValue(true);
 	});
 
@@ -164,7 +161,7 @@ describe('PlivoTrigger Node', () => {
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['incomingSms']; // Only subscribed to incomingSms
+				if (paramName === 'events') return ['incomingSms'];
 				return undefined;
 			});
 
@@ -175,7 +172,6 @@ describe('PlivoTrigger Node', () => {
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
-			// Should return empty result for unsubscribed events
 			expect(result).toEqual({});
 		});
 
@@ -429,8 +425,6 @@ describe('PlivoTrigger Node', () => {
 });
 
 describe('PlivoTriggerHelpers - detectEventType', () => {
-	// These tests verify the actual detectEventType function logic
-	// We need to reimport without mocks for unit testing the helper
 	let realDetectEventType: typeof detectEventType;
 	beforeAll(async () => {
 		({ detectEventType: realDetectEventType } =
@@ -526,17 +520,12 @@ describe('PlivoTriggerHelpers - detectEventType', () => {
 });
 
 describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
-	// Import actual implementation for signature verification tests
 	let realVerifyPlivoSignature: typeof verifyPlivoSignature;
 	beforeAll(async () => {
 		({ verifyPlivoSignature: realVerifyPlivoSignature } =
 			await vi.importActual<typeof import('./PlivoTriggerHelpers')>('./PlivoTriggerHelpers'));
 	});
 
-	// Helper to compute the expected signature using Plivo's V3 base string
-	// (see PlivoTriggerHelpers / plivo SDK v3Security.js): the URL, then for a POST
-	// the params in key-sorted order concatenated as key+value prefixed with "?"
-	// (a GET uses a "key=value&" query string), then "." then the nonce.
 	function computeExpectedSignature(
 		authToken: string,
 		webhookUrl: string,
@@ -609,7 +598,6 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const mockFunctions = createMockWebhookFunctions({
 			authToken: 'test-token',
 			nonce: '12345678',
-			// signature is undefined
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
@@ -620,7 +608,6 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const mockFunctions = createMockWebhookFunctions({
 			authToken: 'test-token',
 			signature: 'some-signature',
-			// nonce is undefined
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
@@ -669,7 +656,6 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const authToken = 'test-auth-token-12345';
 		const webhookUrl = 'https://example.com/webhook/plivo';
 		const nonce = '12345678';
-		// Signature computed from one order; request delivers a different order.
 		const expectedSignature = computeExpectedSignature(authToken, webhookUrl, nonce, {
 			From: '+14155551234',
 			To: '+14155555678',
@@ -731,14 +717,13 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const wrongToken = 'wrong-auth-token';
 		const webhookUrl = 'https://example.com/webhook/plivo';
 		const nonce = '12345678';
-		// Compute signature with wrong token
 		const wrongSignature = computeExpectedSignature(wrongToken, webhookUrl, nonce);
 
 		const mockFunctions = createMockWebhookFunctions({
-			authToken, // Server has correct token
+			authToken,
 			webhookUrl,
 			nonce,
-			signature: wrongSignature, // But signature was made with wrong token
+			signature: wrongSignature,
 			method: 'GET',
 		});
 
@@ -752,7 +737,6 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const nonce = '12345678';
 		const originalParams = { From: '+14155551234', Text: 'Original' };
 		const tamperedParams = { From: '+14155551234', Text: 'Tampered' };
-		// Signature computed with original params
 		const signature = computeExpectedSignature(authToken, webhookUrl, nonce, originalParams);
 
 		const mockFunctions = createMockWebhookFunctions({
@@ -761,7 +745,7 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 			nonce,
 			signature,
 			method: 'POST',
-			params: tamperedParams, // But request delivers tampered params
+			params: tamperedParams,
 		});
 
 		const result = await realVerifyPlivoSignature.call(mockFunctions);
@@ -789,14 +773,9 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 		const webhookUrl = 'https://example.com/webhook';
 		const nonce = '12345678';
 		const signature = computeExpectedSignature(authToken, webhookUrl, nonce);
-		// Verify it's valid base64 by decoding and re-encoding
 		expect(Buffer.from(signature, 'base64').toString('base64')).toBe(signature);
 	});
 
-	// Real inbound payloads captured from Plivo (values only; the signatures below are
-	// recomputed with a throwaway token, since Plivo delivers this value in the
-	// X-Plivo-Signature-Ma-V3 header). These lock in the exact key+value/empty-param
-	// handling and the "?" / "." separators of the base string against real traffic.
 	const CAPTURED_URL = 'https://involves-calculate-transactions-explorer.trycloudflare.com/plivo';
 	const SMS_PARAMS: Record<string, string> = {
 		CarrierFees: '0.00000',
@@ -835,7 +814,6 @@ describe('PlivoTriggerHelpers - verifyPlivoSignature', () => {
 	it('validates a real inbound SMS payload via the Ma-V3 header', async () => {
 		const authToken = 'token-for-sms-fixture';
 		const nonce = '34264034969940645708';
-		// Plivo puts the value we reproduce in Ma-V3; leave a decoy in the plain V3 header.
 		const maV3Signature = computeExpectedSignature(authToken, CAPTURED_URL, nonce, SMS_PARAMS);
 
 		const mockFunctions = createMockWebhookFunctions({
@@ -899,7 +877,6 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 		staticData = {};
 		mockHookFunctions.getWorkflowStaticData.mockReturnValue(staticData);
 		mockHookFunctions.getNodeWebhookUrl.mockReturnValue(WEBHOOK);
-		// Default to a production activation; individual tests override to 'manual'.
 		mockHookFunctions.getActivationMode.mockReturnValue('activate');
 	});
 
@@ -924,7 +901,6 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 		});
 
 		it('tracks test registrations under a separate key', async () => {
-			// A production registration must not make a test registration look present.
 			staticData.managedApps = { '+14155550123': { appId: 'APP-1' } };
 			mockHookFunctions.getActivationMode.mockReturnValue('manual');
 			const result = await plivoTrigger.webhookMethods.default.checkExists.call(mockHookFunctions);
@@ -1006,7 +982,6 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 						return { application: '/v1/Account/X/Application/APP-EXIST/' };
 					}
 					if (method === 'GET' && endpoint === '/Application/APP-EXIST') {
-						// answer_url points at a different node's webhook id than WEBHOOK ('/webhook/abc').
 						return {
 							app_name: 'n8n-plivo-trigger-14155550123',
 							answer_url: 'https://n8n.example.com/webhook/other-node/webhook',
@@ -1080,7 +1055,6 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 				},
 			);
 
-			// Test create points the number at the test URL and records under its own key.
 			await plivoTrigger.webhookMethods.default.create.call(mockHookFunctions);
 			expect(plivoApiRequest).toHaveBeenCalledWith(
 				'POST',
@@ -1095,7 +1069,6 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 
 			(plivoApiRequest as Mock).mockClear();
 
-			// Test delete restores the production URL and never deletes or reassigns.
 			await plivoTrigger.webhookMethods.default.delete.call(mockHookFunctions);
 			expect(plivoApiRequest).toHaveBeenCalledWith(
 				'POST',
