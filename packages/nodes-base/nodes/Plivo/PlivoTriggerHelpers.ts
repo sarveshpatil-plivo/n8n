@@ -78,13 +78,8 @@ export async function verifyPlivoSignature(this: IWebhookFunctions): Promise<boo
 }
 
 export function detectEventType(bodyData: Record<string, unknown>): string {
-	if (bodyData.MessageUUID !== undefined) {
-		if (bodyData.Status !== undefined) {
-			return 'smsStatus';
-		}
-		if (bodyData.Text !== undefined) {
-			return 'incomingSms';
-		}
+	if (bodyData.MessageUUID !== undefined && bodyData.Text !== undefined) {
+		return 'incomingSms';
 	}
 
 	if (bodyData.CallUUID !== undefined) {
@@ -93,10 +88,6 @@ export function detectEventType(bodyData: Record<string, unknown>): string {
 
 		if (direction === 'inbound' && callStatus === 'ringing') {
 			return 'incomingCall';
-		}
-
-		if (callStatus !== undefined) {
-			return 'callStatus';
 		}
 	}
 

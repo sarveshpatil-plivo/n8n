@@ -157,7 +157,7 @@ describe('PlivoTrigger Node', () => {
 		});
 
 		it('should ignore events not subscribed to', async () => {
-			(detectEventType as Mock).mockReturnValue('smsStatus');
+			(detectEventType as Mock).mockReturnValue('incomingCall');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
@@ -166,39 +166,14 @@ describe('PlivoTrigger Node', () => {
 			});
 
 			mockWebhookFunctions.getBodyData.mockReturnValue({
-				MessageUUID: 'msg-123',
-				Status: 'delivered',
+				CallUUID: 'call-123',
+				Direction: 'inbound',
+				CallStatus: 'ringing',
 			});
 
 			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
 
 			expect(result).toEqual({});
-		});
-
-		it('should process SMS delivery status when subscribed', async () => {
-			(detectEventType as Mock).mockReturnValue('smsStatus');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['smsStatus'];
-				return undefined;
-			});
-
-			const bodyData = {
-				MessageUUID: 'msg-123',
-				From: '+14155551234',
-				To: '+14155555678',
-				Status: 'delivered',
-			};
-			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			expect(result.workflowData).toBeDefined();
-			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
-				...bodyData,
-				_eventType: 'smsStatus',
-			});
 		});
 
 		it('starts the workflow on an incoming call and leaves the response to a downstream node', async () => {
@@ -231,46 +206,19 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('should process call status update when subscribed', async () => {
-			(detectEventType as Mock).mockReturnValue('callStatus');
+		it('should handle multiple event subscriptions', async () => {
+			(detectEventType as Mock).mockReturnValue('incomingCall');
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['callStatus'];
+				if (paramName === 'events') return ['incomingCall', 'incomingSms'];
 				return undefined;
 			});
 
 			const bodyData = {
 				CallUUID: 'call-123',
-				From: '+14155551234',
-				To: '+14155555678',
-				CallStatus: 'completed',
-				Direction: 'outbound',
-				Duration: '45',
-			};
-			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			expect(result.workflowData).toBeDefined();
-			expect(mockWebhookFunctions.helpers.returnJsonArray).toHaveBeenCalledWith({
-				...bodyData,
-				_eventType: 'callStatus',
-			});
-		});
-
-		it('should handle multiple event subscriptions', async () => {
-			(detectEventType as Mock).mockReturnValue('smsStatus');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['incomingSms', 'smsStatus', 'callStatus'];
-				return undefined;
-			});
-
-			const bodyData = {
-				MessageUUID: 'msg-123',
-				Status: 'delivered',
+				Direction: 'inbound',
+				CallStatus: 'ringing',
 			};
 			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
 
@@ -284,7 +232,7 @@ describe('PlivoTrigger Node', () => {
 
 			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
 				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['incomingSms', 'smsStatus'];
+				if (paramName === 'events') return ['incomingCall', 'incomingSms'];
 				return undefined;
 			});
 
@@ -336,36 +284,6 @@ describe('PlivoTrigger Node', () => {
 			});
 		});
 
-		it('should handle complete Plivo SMS delivery status payload', async () => {
-			(detectEventType as Mock).mockReturnValue('smsStatus');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['smsStatus'];
-				return undefined;
-			});
-
-			const bodyData = {
-				From: '+14155551234',
-				To: '+14155555678',
-				Status: 'delivered',
-				MessageUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
-				ParentMessageUUID: '',
-				PartInfo: '1 of 1',
-				TotalAmount: '0.0035',
-				TotalRate: '0.0035',
-				Units: '1',
-				MCC: '310',
-				MNC: '004',
-				ErrorCode: '',
-			};
-			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			expect(result.workflowData).toBeDefined();
-		});
-
 		it('should handle complete Plivo incoming call payload', async () => {
 			(detectEventType as Mock).mockReturnValue('incomingCall');
 
@@ -383,37 +301,6 @@ describe('PlivoTrigger Node', () => {
 				Direction: 'inbound',
 				ALegUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
 				ALegRequestUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
-			};
-			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
-
-			const result = await plivoTrigger.webhook!.call(mockWebhookFunctions);
-
-			expect(result.workflowData).toBeDefined();
-		});
-
-		it('should handle complete Plivo call status update payload', async () => {
-			(detectEventType as Mock).mockReturnValue('callStatus');
-
-			mockWebhookFunctions.getNodeParameter.mockImplementation((paramName: string) => {
-				if (paramName === 'validateSignature') return true;
-				if (paramName === 'events') return ['callStatus'];
-				return undefined;
-			});
-
-			const bodyData = {
-				CallUUID: 'e8e1c9c0-5d5a-11e9-8647-d663bd873d93',
-				From: '+14155551234',
-				To: '+14155555678',
-				CallStatus: 'completed',
-				Direction: 'outbound',
-				Duration: '45',
-				BillDuration: '60',
-				BillRate: '0.0100',
-				TotalCost: '0.0100',
-				HangupCause: 'NORMAL_CLEARING',
-				HangupSource: 'callee',
-				EndTime: '2024-01-15 10:30:00',
-				StartTime: '2024-01-15 10:29:15',
 			};
 			mockWebhookFunctions.getBodyData.mockReturnValue(bodyData);
 
@@ -442,14 +329,14 @@ describe('PlivoTriggerHelpers - detectEventType', () => {
 		expect(realDetectEventType(payload)).toBe('incomingSms');
 	});
 
-	it('should detect SMS delivery status', () => {
+	it('ignores SMS delivery-status callbacks (not a subscribable event)', () => {
 		const payload = {
 			MessageUUID: 'msg-uuid-123',
 			Status: 'delivered',
 			From: '+14155551234',
 			To: '+14155555678',
 		};
-		expect(realDetectEventType(payload)).toBe('smsStatus');
+		expect(realDetectEventType(payload)).toBe('unknown');
 	});
 
 	it('should detect incoming call', () => {
@@ -463,23 +350,23 @@ describe('PlivoTriggerHelpers - detectEventType', () => {
 		expect(realDetectEventType(payload)).toBe('incomingCall');
 	});
 
-	it('should detect call status update for outbound completed call', () => {
+	it('ignores outbound call-status callbacks (not a subscribable event)', () => {
 		const payload = {
 			CallUUID: 'call-uuid-123',
 			Direction: 'outbound',
 			CallStatus: 'completed',
 			Duration: 120,
 		};
-		expect(realDetectEventType(payload)).toBe('callStatus');
+		expect(realDetectEventType(payload)).toBe('unknown');
 	});
 
-	it('should detect call status for answered inbound call', () => {
+	it('ignores non-ringing inbound call states', () => {
 		const payload = {
 			CallUUID: 'call-uuid-123',
 			Direction: 'inbound',
 			CallStatus: 'answered',
 		};
-		expect(realDetectEventType(payload)).toBe('callStatus');
+		expect(realDetectEventType(payload)).toBe('unknown');
 	});
 
 	it('should return unknown for unrecognized payload', () => {
@@ -509,13 +396,13 @@ describe('PlivoTriggerHelpers - detectEventType', () => {
 		expect(realDetectEventType(payload)).toBe('unknown');
 	});
 
-	it('should prioritize Status over Text when both present (SMS status)', () => {
+	it('treats a message carrying Text as an incoming SMS even if a Status is present', () => {
 		const payload = {
 			MessageUUID: 'msg-uuid-123',
 			Status: 'delivered',
 			Text: 'Some text',
 		};
-		expect(realDetectEventType(payload)).toBe('smsStatus');
+		expect(realDetectEventType(payload)).toBe('incomingSms');
 	});
 });
 
