@@ -14,6 +14,45 @@ import { verifyPlivoSignature, detectEventType } from './PlivoTriggerHelpers';
 const n8nWebhookId = (url: unknown): string | undefined =>
 	/\/(?:webhook|webhook-test)\/([^/?]+)/.exec(String(url ?? ''))?.[1];
 
+type ManagedEntry = {
+	appId: string;
+	createdApp: boolean;
+	previousAppId: string;
+	snapshot: IDataObject;
+};
+
+async function teardownManaged(
+	ctx: IHookFunctions,
+	number: string,
+	entry: ManagedEntry,
+	isTest: boolean,
+): Promise<void> {
+	const num = number.replace(/\D/g, '');
+
+	if (isTest) {
+		await plivoApiRequest.call(ctx, 'POST', `/Application/${entry.appId}`, {
+			answer_url: entry.snapshot.answer_url ?? '',
+			answer_method: entry.snapshot.answer_method ?? 'POST',
+			message_url: entry.snapshot.message_url ?? '',
+			message_method: entry.snapshot.message_method ?? 'POST',
+		});
+		return;
+	}
+
+	await plivoApiRequest.call(ctx, 'POST', `/Application/${entry.appId}`, {
+		answer_url: '',
+		message_url: '',
+	});
+	if (entry.createdApp) {
+		if (entry.previousAppId) {
+			await plivoApiRequest.call(ctx, 'POST', `/Number/${num}`, {
+				app_id: entry.previousAppId,
+			});
+		}
+		await plivoApiRequest.call(ctx, 'DELETE', `/Application/${entry.appId}`);
+	}
+}
+
 export class PlivoTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Plivo Trigger',
@@ -145,76 +184,85 @@ export class PlivoTrigger implements INodeType {
 				const webhookUrl = this.getNodeWebhookUrl('default') as string;
 				const phoneNumbers = this.getNodeParameter('phoneNumbers', []) as string[];
 				const staticData = this.getWorkflowStaticData('node');
-				const key = this.getActivationMode() === 'manual' ? 'testManagedApps' : 'managedApps';
+				const isTest = this.getActivationMode() === 'manual';
+				const key = isTest ? 'testManagedApps' : 'managedApps';
 
-				const managed: IDataObject = {};
+				const managed: Record<string, ManagedEntry> = {};
 
-				for (const number of phoneNumbers) {
-					const num = number.replace(/\D/g, '');
-					const appName = `n8n-plivo-trigger-${num}`;
+				try {
+					for (const number of phoneNumbers) {
+						const num = number.replace(/\D/g, '');
+						const appName = `n8n-plivo-trigger-${num}`;
 
-					const numberInfo = await plivoApiRequest.call(this, 'GET', `/Number/${num}`);
-					const currentAppId = numberInfo.application
-						? String(numberInfo.application).split('/').filter(Boolean).pop()
-						: '';
+						const numberInfo = await plivoApiRequest.call(this, 'GET', `/Number/${num}`);
+						const currentAppId = numberInfo.application
+							? String(numberInfo.application).split('/').filter(Boolean).pop()
+							: '';
 
-					let appId = '';
-					let createdApp = false;
-					let previousAppId = '';
-					const snapshot: IDataObject = {};
+						let appId = '';
+						let createdApp = false;
+						let previousAppId = '';
+						const snapshot: IDataObject = {};
 
-					if (currentAppId) {
-						const currentApp = await plivoApiRequest
-							.call(this, 'GET', `/Application/${currentAppId}`)
-							.catch(() => undefined);
-						if (currentApp?.app_name === appName) {
-							const myWebhookId = n8nWebhookId(webhookUrl);
-							const callOwner = n8nWebhookId(currentApp.answer_url);
-							const smsOwner = n8nWebhookId(currentApp.message_url);
-							if (provisionCall && callOwner && callOwner !== myWebhookId) {
-								throw new NodeOperationError(
-									this.getNode(),
-									`The number ${number} is already receiving incoming calls in another active workflow. A Plivo number can route incoming calls to only one workflow at a time — deactivate the other workflow first.`,
-								);
+						if (currentAppId) {
+							const currentApp = await plivoApiRequest
+								.call(this, 'GET', `/Application/${currentAppId}`)
+								.catch(() => undefined);
+							if (currentApp?.app_name === appName) {
+								const myWebhookId = n8nWebhookId(webhookUrl);
+								const callOwner = n8nWebhookId(currentApp.answer_url);
+								const smsOwner = n8nWebhookId(currentApp.message_url);
+								if (provisionCall && callOwner && callOwner !== myWebhookId) {
+									throw new NodeOperationError(
+										this.getNode(),
+										`The number ${number} is already receiving incoming calls in another active workflow. A Plivo number can route incoming calls to only one workflow at a time — deactivate the other workflow first.`,
+									);
+								}
+								if (provisionSms && smsOwner && smsOwner !== myWebhookId) {
+									throw new NodeOperationError(
+										this.getNode(),
+										`The number ${number} is already receiving incoming SMS in another active workflow. A Plivo number can route incoming SMS to only one workflow at a time — deactivate the other workflow first.`,
+									);
+								}
+
+								appId = currentAppId;
+								snapshot.answer_url = currentApp.answer_url ?? '';
+								snapshot.answer_method = currentApp.answer_method ?? 'POST';
+								snapshot.message_url = currentApp.message_url ?? '';
+								snapshot.message_method = currentApp.message_method ?? 'POST';
+							} else if (currentApp) {
+								previousAppId = currentAppId;
 							}
-							if (provisionSms && smsOwner && smsOwner !== myWebhookId) {
-								throw new NodeOperationError(
-									this.getNode(),
-									`The number ${number} is already receiving incoming SMS in another active workflow. A Plivo number can route incoming SMS to only one workflow at a time — deactivate the other workflow first.`,
-								);
-							}
-
-							appId = currentAppId;
-							snapshot.answer_url = currentApp.answer_url ?? '';
-							snapshot.answer_method = currentApp.answer_method ?? 'POST';
-							snapshot.message_url = currentApp.message_url ?? '';
-							snapshot.message_method = currentApp.message_method ?? 'POST';
-						} else if (currentApp) {
-							previousAppId = currentAppId;
 						}
-					}
 
-					if (!appId) {
-						const created = await plivoApiRequest.call(this, 'POST', '/Application', {
-							app_name: appName,
-						});
-						appId = created.app_id;
-						createdApp = true;
-						await plivoApiRequest.call(this, 'POST', `/Number/${num}`, { app_id: appId });
-					}
+						if (!appId) {
+							const created = await plivoApiRequest.call(this, 'POST', '/Application', {
+								app_name: appName,
+							});
+							appId = created.app_id;
+							createdApp = true;
+							managed[number] = { appId, createdApp, previousAppId, snapshot };
+							await plivoApiRequest.call(this, 'POST', `/Number/${num}`, { app_id: appId });
+						} else {
+							managed[number] = { appId, createdApp, previousAppId, snapshot };
+						}
 
-					const urls: IDataObject = {};
-					if (provisionSms) {
-						urls.message_url = webhookUrl;
-						urls.message_method = 'POST';
+						const urls: IDataObject = {};
+						if (provisionSms) {
+							urls.message_url = webhookUrl;
+							urls.message_method = 'POST';
+						}
+						if (provisionCall) {
+							urls.answer_url = webhookUrl;
+							urls.answer_method = 'POST';
+						}
+						await plivoApiRequest.call(this, 'POST', `/Application/${appId}`, urls);
 					}
-					if (provisionCall) {
-						urls.answer_url = webhookUrl;
-						urls.answer_method = 'POST';
+				} catch (error) {
+					for (const number of Object.keys(managed)) {
+						await teardownManaged(this, number, managed[number], isTest).catch(() => undefined);
 					}
-					await plivoApiRequest.call(this, 'POST', `/Application/${appId}`, urls);
-
-					managed[number] = { appId, createdApp, previousAppId, snapshot };
+					throw error;
 				}
 
 				staticData[key] = managed;
@@ -226,39 +274,10 @@ export class PlivoTrigger implements INodeType {
 				const staticData = this.getWorkflowStaticData('node');
 				const isTest = this.getActivationMode() === 'manual';
 				const key = isTest ? 'testManagedApps' : 'managedApps';
-				const managed = (staticData[key] as IDataObject) ?? {};
+				const managed = (staticData[key] as Record<string, ManagedEntry>) ?? {};
 
 				for (const number of Object.keys(managed)) {
-					const num = number.replace(/\D/g, '');
-					const entry = managed[number] as {
-						appId: string;
-						createdApp: boolean;
-						previousAppId: string;
-						snapshot: IDataObject;
-					};
-
-					if (isTest) {
-						await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
-							answer_url: entry.snapshot.answer_url ?? '',
-							answer_method: entry.snapshot.answer_method ?? 'POST',
-							message_url: entry.snapshot.message_url ?? '',
-							message_method: entry.snapshot.message_method ?? 'POST',
-						});
-						continue;
-					}
-
-					await plivoApiRequest.call(this, 'POST', `/Application/${entry.appId}`, {
-						answer_url: '',
-						message_url: '',
-					});
-					if (entry.createdApp) {
-						if (entry.previousAppId) {
-							await plivoApiRequest.call(this, 'POST', `/Number/${num}`, {
-								app_id: entry.previousAppId,
-							});
-						}
-						await plivoApiRequest.call(this, 'DELETE', `/Application/${entry.appId}`);
-					}
+					await teardownManaged(this, number, managed[number], isTest);
 				}
 
 				delete staticData[key];

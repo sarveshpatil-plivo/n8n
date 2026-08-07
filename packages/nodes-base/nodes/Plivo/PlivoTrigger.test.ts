@@ -996,6 +996,30 @@ describe('PlivoTrigger Node - webhookMethods', () => {
 			).rejects.toThrow(/already receiving incoming calls in another active workflow/);
 			expect(plivoApiRequest).not.toHaveBeenCalledWith('DELETE', expect.anything());
 		});
+
+		it('rolls back numbers already provisioned when a later number fails', async () => {
+			setParams(['incomingSms'], ['+14155550111', '+14155550222']);
+			(plivoApiRequest as Mock).mockImplementation(
+				async (method: string, endpoint: string, body?: IDataObject) => {
+					if (method === 'GET' && endpoint.startsWith('/Number/')) return { application: '' };
+					if (method === 'POST' && endpoint === '/Application') {
+						return { app_id: body?.app_name === 'n8n-plivo-trigger-14155550111' ? 'APP-1' : 'APP-2' };
+					}
+					if (method === 'POST' && endpoint === '/Application/APP-2' && body?.message_url === WEBHOOK) {
+						throw new Error('Plivo rejected the URL update');
+					}
+					return {};
+				},
+			);
+
+			await expect(
+				plivoTrigger.webhookMethods.default.create.call(mockHookFunctions),
+			).rejects.toThrow('Plivo rejected the URL update');
+
+			expect(plivoApiRequest).toHaveBeenCalledWith('DELETE', '/Application/APP-1');
+			expect(plivoApiRequest).toHaveBeenCalledWith('DELETE', '/Application/APP-2');
+			expect(staticData.managedApps).toBeUndefined();
+		});
 	});
 
 	describe('delete', () => {
